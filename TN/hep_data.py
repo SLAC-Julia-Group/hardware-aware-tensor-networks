@@ -1,6 +1,9 @@
 import h5py
-import tensorflow as tf
+# import tensorflow as tf
 import numpy as np
+import jax
+import jax.numpy as jnp
+from typing import Tuple, Optional
 
 def print_keys(h5_file):
     print("Keys in the h5 file:", list(h5_file.keys()))
@@ -273,92 +276,153 @@ def prepare_training_data_from_structured(structured_dataset, max_batches=None, 
     # Ensure correct data type
     return train_data.astype(dtype)
 
-def h5_to_data_format(h5_file_path, dataset_key="Particles", batch_size=64, dtype=np.float64, max_batches=None):
+def h5_to_jax_array(h5_file_path, dataset_key="Particles", dtype=np.float64):
     """
-    Load H5 file data and convert directly to training format with minimal memory overhead.
+    Load H5 file data and convert directly to JAX array format with minimal memory overhead.
     
     Args:
         h5_file_path: Path to the H5 file
         dataset_key: Key of the dataset in the H5 file
-        batch_size: Size of the batches for processing
         dtype: Data type for the output array
-        max_batches: Maximum number of batches to process (None for all)
         
     Returns:
-        Numpy array with shape (n_samples, 56) ready for tensor network training
+        JAX array with shape (n_samples, 56) ready for tensor network training
     """
-    # Open H5 file
-    h5_file = h5py.File(h5_file_path, 'r')
-    
-    # Create TensorFlow dataset
-    from hep_data import create_tf_dataset
-    dataset = create_tf_dataset(h5_file, dataset_key, batch_size=batch_size)
-    
-    # Apply the transformation to structure the data
-    def map_structure(batch):
-        # Initialize list for features
-        all_features = []
+    with h5py.File(h5_file_path, 'r') as h5_file:
+        dataset = h5_file[dataset_key]
+        n_samples = dataset.shape[0]
         
-        # MET features (pt, phi)
-        all_features.append(tf.transpose(batch[:, 0:1, 0], [1, 0]))    # pt
-        all_features.append(tf.transpose(batch[:, 0:1, 2], [1, 0]))    # phi
+        # Preallocate output array to avoid intermediate copies
+        output = np.zeros((n_samples, 56), dtype=dtype)
         
-        # Electron features (pt, eta, phi)
-        all_features.append(tf.transpose(batch[:, 1:5, 0], [1, 0]))    # pt
-        all_features.append(tf.transpose(batch[:, 1:5, 1], [1, 0]))    # eta
-        all_features.append(tf.transpose(batch[:, 1:5, 2], [1, 0]))    # phi
+        # MET features (indices 0-1)
+        output[:, 0] = dataset[:, 0, 0]  # pt
+        output[:, 1] = dataset[:, 0, 2]  # phi
         
-        # Muon features (pt, eta, phi)
-        all_features.append(tf.transpose(batch[:, 5:9, 0], [1, 0]))    # pt
-        all_features.append(tf.transpose(batch[:, 5:9, 1], [1, 0]))    # eta
-        all_features.append(tf.transpose(batch[:, 5:9, 2], [1, 0]))    # phi
+        # Electron features (indices 2-13)
+        for e in range(4):
+            output[:, 2+e] = dataset[:, 1+e, 0]    # e pt
+            output[:, 6+e] = dataset[:, 1+e, 1]    # e eta
+            output[:, 10+e] = dataset[:, 1+e, 2]   # e phi
         
-        # Jet features (pt, eta, phi)
-        all_features.append(tf.transpose(batch[:, 9:19, 0], [1, 0]))   # pt
-        all_features.append(tf.transpose(batch[:, 9:19, 1], [1, 0]))   # eta
-        all_features.append(tf.transpose(batch[:, 9:19, 2], [1, 0]))   # phi
+        # Muon features (indices 14-25)
+        for m in range(4):
+            output[:, 14+m] = dataset[:, 5+m, 0]   # mu pt
+            output[:, 18+m] = dataset[:, 5+m, 1]   # mu eta
+            output[:, 22+m] = dataset[:, 5+m, 2]   # mu phi
         
-        # Concatenate along first dimension (56, batch_size)
-        concatenated = tf.concat(all_features, axis=0)
+        # Jet features (indices 26-55)
+        for j in range(10):
+            output[:, 26+j] = dataset[:, 9+j, 0]   # jet pt
+            output[:, 36+j] = dataset[:, 9+j, 1]   # jet eta
+            output[:, 46+j] = dataset[:, 9+j, 2]   # jet phi
         
-        # Transpose to get (batch_size, 56)
-        return tf.transpose(concatenated)
+    # Convert to JAX array - should be a shallow operation if possible
+    return jnp.asarray(output)
+
+class LazyH5Array:
+    def __init__(self, h5_file_path: str, dataset_key: str = "Particles", dtype=np.float64):
+        """
+        A lazy loading array that behaves like a JAX array but only loads data on demand.
+        
+        Args:
+            h5_file_path: Path to the H5 file
+            dataset_key: Key of the dataset in the H5 file
+            dtype: Data type for the output array
+        """
+        self.h5_file_path = h5_file_path
+        self.dataset_key = dataset_key
+        self.dtype = dtype
+        
+        # Open the file to get shape, but don't load data
+        with h5py.File(h5_file_path, 'r') as h5_file:
+            self.dataset_shape = h5_file[dataset_key].shape
+            # Cache the output shape for quick access
+            self.shape = (self.dataset_shape[0], 56)
+        
+        # Keep track of loaded chunks
+        self._cache = {}
     
-    # Apply the transformation to the dataset
-    processed_dataset = dataset.map(map_structure)
+    def __len__(self):
+        """Return the number of samples."""
+        return self.shape[0]
     
-    # Determine total batches if needed
-    if max_batches is None:
-        max_batches = sum(1 for _ in processed_dataset)
+    def _process_chunk(self, data_chunk):
+        """Transform a chunk of the raw data to the desired output format."""
+        n_samples = data_chunk.shape[0]
+        output = np.zeros((n_samples, 56), dtype=self.dtype)
+        
+        # MET features (indices 0-1)
+        output[:, 0] = data_chunk[:, 0, 0]  # pt
+        output[:, 1] = data_chunk[:, 0, 2]  # phi
+        
+        # Electron features (indices 2-13)
+        for e in range(4):
+            output[:, 2+e] = data_chunk[:, 1+e, 0]    # e pt
+            output[:, 6+e] = data_chunk[:, 1+e, 1]    # e eta
+            output[:, 10+e] = data_chunk[:, 1+e, 2]   # e phi
+        
+        # Muon features (indices 14-25)
+        for m in range(4):
+            output[:, 14+m] = data_chunk[:, 5+m, 0]   # mu pt
+            output[:, 18+m] = data_chunk[:, 5+m, 1]   # mu eta
+            output[:, 22+m] = data_chunk[:, 5+m, 2]   # mu phi
+        
+        # Jet features (indices 26-55)
+        for j in range(10):
+            output[:, 26+j] = data_chunk[:, 9+j, 0]   # jet pt
+            output[:, 36+j] = data_chunk[:, 9+j, 1]   # jet eta
+            output[:, 46+j] = data_chunk[:, 9+j, 2]   # jet phi
+        
+        return output
     
-    # Preallocate output array if batch size is consistent
-    # Get the shape of the first batch to determine dimensions
-    for first_batch in processed_dataset.take(1):
-        batch_shape = first_batch.shape
-        total_samples = min(max_batches * batch_shape[0], 
-                            h5_file[dataset_key].shape[0])
-        training_data = np.zeros((total_samples, batch_shape[1]), dtype=dtype)
-        break
+    def _get_chunk(self, start_idx, end_idx):
+        """Load a chunk from the H5 file if not in cache."""
+        chunk_key = (start_idx, end_idx)
+        if chunk_key not in self._cache:
+            with h5py.File(self.h5_file_path, 'r') as h5_file:
+                raw_chunk = h5_file[self.dataset_key][start_idx:end_idx]
+                self._cache[chunk_key] = self._process_chunk(raw_chunk)
+        return self._cache[chunk_key]
     
-    # Fill the array batch by batch
-    sample_idx = 0
-    for i, batch in enumerate(processed_dataset):
-        if i >= max_batches:
-            break
+    def __getitem__(self, idx):
+        """Support array-like indexing but load data on demand."""
+        if isinstance(idx, int):
+            # Single item access
+            chunk = self._get_chunk(idx, idx+1)
+            return jnp.asarray(chunk[0])
+        elif isinstance(idx, slice):
+            # Slice access
+            start = idx.start or 0
+            stop = idx.stop or len(self)
+            step = idx.step or 1
             
-        # Get batch as numpy array
-        batch_np = batch.numpy()
-        batch_size = batch_np.shape[0]
-        
-        # Add to the preallocated array
-        training_data[sample_idx:sample_idx+batch_size] = batch_np
-        sample_idx += batch_size
-    
-    # Resize if we didn't use all preallocated space
-    if sample_idx < total_samples:
-        training_data = training_data[:sample_idx]
-    
-    # Close the H5 file
-    h5_file.close()
-    
-    return training_data
+            if step != 1:
+                # For non-unit steps, we need to load separate chunks
+                indices = range(start, stop, step)
+                result = np.zeros((len(indices), 56), dtype=self.dtype)
+                for i, idx in enumerate(indices):
+                    result[i] = self._get_chunk(idx, idx+1)[0]
+                return jnp.asarray(result)
+            else:
+                # For unit steps, we can load the whole range at once
+                return jnp.asarray(self._get_chunk(start, stop))
+        elif isinstance(idx, tuple) and len(idx) == 2:
+            # 2D indexing
+            if isinstance(idx[0], int) and isinstance(idx[1], int):
+                chunk = self._get_chunk(idx[0], idx[0]+1)
+                return jnp.asarray(chunk[0, idx[1]])
+            else:
+                # Handle more complex slicing
+                # (simplified implementation - would need to handle all cases)
+                row_slice = idx[0]
+                col_slice = idx[1]
+                if isinstance(row_slice, slice):
+                    start = row_slice.start or 0
+                    stop = row_slice.stop or len(self)
+                    chunk = self._get_chunk(start, stop)
+                    return jnp.asarray(chunk[:, col_slice])
+                else:
+                    raise NotImplementedError("Complex indexing not fully implemented")
+        else:
+            raise IndexError("Unsupported indexing")
