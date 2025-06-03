@@ -72,12 +72,7 @@ class HDF5Dataset(Dataset):
         self.empty_array =  np.empty(self.file[key].shape, dtype=self.file[key].dtype)
 
         self.stats = None # mean and var
-        if norm:
-            print("Normalising inputs with norm_parameters.npz")
-            self.stats = get_norm_dict(os.path.dirname(file_path))
-        else:
-            print("No normalization stats loaded.")
-
+        self.norm = norm
 
     def __len__(self):
         # n_jets dimension
@@ -114,6 +109,27 @@ class HDF5Dataset(Dataset):
                 features[:, i] = (features[:, i] - mu) / std
                 if np.any(np.isnan(features[:, i])): 
                     print("warning! ", mu, std, " caused some nans")
+
+        # Physics-aware normalization
+        if self.norm:  # norm=True case
+            # MET pt and phi
+            features[:, 0] = features[:, 0] / 1200  # MET pt
+            features[:, 1] = (features[:, 1] + np.pi) / (2 * np.pi)  # MET phi
+            
+            # Electrons: pt, eta, phi
+            features[:, 2:6] = features[:, 2:6] / 1200  # Electron pt
+            features[:, 6:10] = (features[:, 6:10] + 5) / 10  # Electron eta
+            features[:, 10:14] = (features[:, 10:14] + np.pi) / (2 * np.pi)  # Electron phi
+            
+            # Muons: pt, eta, phi
+            features[:, 14:18] = features[:, 14:18] / 800  # Muon pt
+            features[:, 18:22] = (features[:, 18:22] + 5) / 10  # Muon eta
+            features[:, 22:26] = (features[:, 22:26] + np.pi) / (2 * np.pi)  # Muon phi
+            
+            # Jets: pt, eta, phi
+            features[:, 26:36] = features[:, 26:36] / 2500  # Jet pt
+            features[:, 36:46] = (features[:, 36:46] + 5) / 10  # Jet eta
+            features[:, 46:56] = (features[:, 46:56] + np.pi) / (2 * np.pi)  # Jet phi
 
         return features
 
