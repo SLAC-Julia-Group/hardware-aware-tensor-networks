@@ -99,8 +99,30 @@ class CascadableSMPO(CascadableOperator):
         if key is None:
             key = jax.random.PRNGKey(42)
         
-        # Use spacing from config if calculated
-        spacing = config.spacing if config.spacing is not None else 1
+        # Check if this is an expansion layer
+        if config.output_dim >= config.input_dim:
+            raise ValueError(
+                f"CascadableSMPO cannot handle expansion ({config.input_dim}→{config.output_dim}). "
+                f"SMPO is designed for compression only. Use ExpansionSMPO (coming soon) instead."
+            )
+        
+        # Calculate spacing if not provided
+        if config.spacing is None:
+            if self.debug:
+                print(f"[CREATE] Auto-calculating spacing for {config.input_dim}→{config.output_dim}")
+            
+            # Import here to avoid circular dependency
+            from ..builders.dimension_calculator import DimensionCalculator
+            calc = DimensionCalculator(debug=False)
+            spacing_result = calc.calculate_optimal_spacing(
+                config.input_dim, config.output_dim, config.cyclic
+            )
+            spacing = spacing_result.spacing
+            
+            if self.debug:
+                print(f"[CREATE] Calculated spacing: {spacing}")
+        else:
+            spacing = config.spacing
         
         if self.debug:
             print(f"[CREATE] Building SMPO: L={config.input_dim}, "
