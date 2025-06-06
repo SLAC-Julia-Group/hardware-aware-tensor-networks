@@ -39,7 +39,7 @@ class DimensionCalculator:
     - Validation of achievable configurations
     """
     
-    def __init__(self, debug: bool = True):
+    def __init__(self, debug: bool = False):
         self.debug = debug
     
     def calculate_cascade_spacings(self, layer_dims: List[int], 

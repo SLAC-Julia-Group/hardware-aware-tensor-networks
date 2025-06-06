@@ -153,7 +153,12 @@ class DebugInfo:
         self.layer_shapes.append(shape)
         
         if self.layer_timings:
-            print(f"[DEBUG] Layer {layer_idx}: {timing:.3f}s, norm={norm:.6f}, shape={shape}")
+            # Handle JAX tracers during gradient computation
+            try:
+                print(f"[DEBUG] Layer {layer_idx}: {timing:.3f}s, norm={norm:.6f}, shape={shape}")
+            except TypeError:
+                # During tracing, just print without formatting
+                print(f"[DEBUG] Layer {layer_idx}: {timing}s, norm={norm}, shape={shape}")
     
     def summary(self):
         """Print a summary of the debugging information."""

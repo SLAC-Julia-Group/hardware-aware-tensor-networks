@@ -34,7 +34,7 @@ class TensorNetworkCascade:
     def __init__(self, 
                  operators: List[CascadableOperator],
                  name: Optional[str] = None,
-                 debug: bool = True,
+                 debug: bool = False,
                  validate: bool = True):
         """
         Initialize cascade with list of operators.
@@ -119,12 +119,13 @@ class TensorNetworkCascade:
                 # Apply operator
                 current = op.apply(current)
                 
-                # Record timing and info
-                layer_time = time.time() - layer_start
-                layer_norm = current.norm() if hasattr(current, 'norm') else 0.0
-                layer_shape = self._get_shape(current)
-                
-                self.debug_info.add_layer_info(i, layer_time, layer_norm, layer_shape)
+                if self.debug:
+                    # Record timing and info
+                    layer_time = time.time() - layer_start
+                    layer_norm = current.norm() if hasattr(current, 'norm') else 0.0
+                    layer_shape = self._get_shape(current)
+                    
+                    self.debug_info.add_layer_info(i, layer_time, layer_norm, layer_shape)
                 
                 if store_intermediates:
                     intermediates.append(current)
@@ -316,3 +317,45 @@ class TensorNetworkCascade:
         dims.extend([op.output_dim for op in self.operators])
         arch = "→".join(str(d) for d in dims)
         return f"TensorNetworkCascade({arch}, layers={len(self.operators)})"
+
+    def copy(self):
+        """
+        Create a copy of the cascade.
+        
+        Returns:
+            TensorNetworkCascade: A new cascade with copied operators
+        """
+        # Create copies of all operators
+        copied_operators = []
+        
+        for op in self.operators:
+            # For UnifiedCascadableOperator
+            if hasattr(op, 'implementation'):
+                # Create a new operator with the same config
+                new_op = type(op)(
+                    config=op.config,
+                    debug=op.debug,
+                    debug_level=op.debug_level
+                )
+                
+                # Copy the tensor data
+                if hasattr(op.implementation, 'tensors'):
+                    for old_t, new_t in zip(op.implementation.tensors, new_op.implementation.tensors):
+                        new_t.modify(data=old_t.data.copy())
+                
+                copied_operators.append(new_op)
+            else:
+                # Fallback for other operator types
+                # This is a shallow copy - might need to be more sophisticated
+                import copy
+                copied_operators.append(copy.deepcopy(op))
+        
+        # Create new cascade with copied operators
+        new_cascade = TensorNetworkCascade(
+            operators=copied_operators,
+            name=self.name + "_copy",
+            debug=self.debug,
+            validate=False  # Skip validation since we know it's valid
+        )
+        
+        return new_cascade

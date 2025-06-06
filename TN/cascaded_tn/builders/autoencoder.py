@@ -25,7 +25,7 @@ class AutoencoderBuilder:
     - Symmetric architecture generation
     """
     
-    def __init__(self, debug: bool = True):
+    def __init__(self, debug: bool = False):
         self.debug = debug
         self.dim_calc = DimensionCalculator(debug=False)
     
@@ -298,12 +298,18 @@ class AutoencoderBuilder:
         operators = []
         keys = jax.random.split(key, len(full_dims) - 1)
         
+        # Extract config-specific kwargs
+        phys_dim = operator_kwargs.pop('phys_dim', (2, 2))
+        add_identity = operator_kwargs.pop('add_identity', False)
+        
         for i in range(len(full_dims) - 1):
             config = LayerConfig(
                 input_dim=full_dims[i],
                 output_dim=full_dims[i + 1],
                 bond_dim=bond_dims[i],
-                cyclic=cyclic
+                cyclic=cyclic,
+                phys_dim=phys_dim,
+                add_identity=add_identity
             )
             
             op = UnifiedCascadableOperator(

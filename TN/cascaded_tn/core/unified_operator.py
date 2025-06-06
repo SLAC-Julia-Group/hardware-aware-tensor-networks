@@ -13,6 +13,7 @@ from tn4ml.models.mpo import MPO_initialize
 import quimb.tensor as qtn
 
 from .base import CascadableOperator, LayerConfig, debug_timer, debug_trace
+from .expansion import ExpansionOperator
 
 
 class UnifiedCascadableOperator(CascadableOperator):
@@ -21,7 +22,7 @@ class UnifiedCascadableOperator(CascadableOperator):
     
     Based on input/output dimensions, it chooses:
     - Compression (out < in): Uses SMPO with spacing
-    - Expansion (out > in): Uses MPO-like structure with shared inputs
+    - Expansion (out > in): Uses ExpansionOperator
     - Identity (out = in): Uses regular MPO
     """
     
@@ -54,8 +55,14 @@ class UnifiedCascadableOperator(CascadableOperator):
                 config, initializer, key, **kwargs
             )
         elif self.operation_type == "expansion":
-            self.implementation = self._create_expansion_layer(
-                config, initializer, key, **kwargs
+            # Use the new ExpansionOperator
+            self.implementation = ExpansionOperator(
+                config=config,
+                initializer=initializer,
+                key=key,
+                debug=debug,
+                debug_level=debug_level,
+                **kwargs
             )
         else:  # identity
             self.implementation = self._create_identity_layer(
@@ -94,176 +101,70 @@ class UnifiedCascadableOperator(CascadableOperator):
         
         # Handle non-uniform spacing
         if isinstance(spacing, list):
-            # For non-uniform spacing, we need to handle it differently
-            # SMPO_initialize might not support 'spacings' directly
-            # For now, just use the first spacing value
             if self.debug:
                 print(f"[WARNING] Non-uniform spacing not fully supported yet, using first value")
             spacing = spacing[0]
         
+        # Extract boundary from kwargs to avoid duplicate
+        boundary = kwargs.pop('boundary', 'pbc' if config.cyclic else 'obc')
+        
         # Create SMPO
         smpo = SMPO_initialize(
-            L=config.input_dim,  # Number of tensors = number of inputs
+            L=config.input_dim,
             initializer=initializer,
             key=key,
             bond_dim=config.bond_dim,
             phys_dim=config.phys_dim,
             cyclic=config.cyclic,
             add_identity=config.add_identity,
-            boundary='pbc' if config.cyclic else 'obc',
-            spacing=spacing,  # Always use 'spacing', not 'spacings'
-            **kwargs
+            boundary=boundary,
+            spacing=spacing,
+            **kwargs  # Pass remaining kwargs
         )
         
         # Verify output count
         actual_outputs = len(list(smpo.lower_inds))
         if actual_outputs != config.output_dim:
             print(f"[WARNING] SMPO created with {actual_outputs} outputs, "
-                  f"expected {config.output_dim}")
+                f"expected {config.output_dim}")
         
         return smpo
-    
-    def _create_expansion_layer(self, config, initializer, key, **kwargs):
-        """
-        Create expansion layer using MPO-like structure.
-        
-        For expansion, we need N tensors (one per output) where
-        each input connects to multiple tensors.
-        """
-        if self.debug:
-            print(f"[EXPANSION] Creating {config.output_dim} tensors "
-                  f"for {config.input_dim} inputs")
-        
-        # For now, create a placeholder structure
-        # In a real implementation, this would create tensors where:
-        # - Number of tensors = output_dim
-        # - Each tensor has access to all input_dim inputs
-        # - The connectivity pattern determines the expansion
-        
-        # Calculate which outputs each input connects to
-        connections = self._calculate_expansion_connections(
-            config.input_dim, config.output_dim
-        )
-        
-        # Build tensor network
-        tensors = []
-        for i in range(config.output_dim):
-            # Each output tensor
-            # Shape: (left_bond, right_bond, phys_up, phys_down)
-            shape = self._get_tensor_shape(i, config)
-            
-            # Initialize tensor
-            tensor_key = jax.random.split(key, config.output_dim)[i]
-            data = initializer(tensor_key, shape)
-            
-            # Create indices
-            inds = self._get_tensor_indices(i, config, connections)
-            
-            # Create quimb tensor
-            tensor = qtn.Tensor(data=data, inds=inds, tags=[f'I{i}'])
-            tensors.append(tensor)
-        
-        # Create TensorNetwork
-        tn = qtn.TensorNetwork(tensors)
-        
-        # Add expansion-specific attributes
-        tn.operation_type = 'expansion'
-        tn.input_dim = config.input_dim
-        tn.output_dim = config.output_dim
-        tn.connections = connections
-        
-        return tn
-    
+
     def _create_identity_layer(self, config, initializer, key, **kwargs):
-        """Create identity layer using tensors."""
+        """Create identity layer using MPO."""
         if self.debug:
             print(f"[IDENTITY] Creating identity transformation")
         
-        # Create actual tensors for identity operation
-        return self._create_identity_placeholder(config)
-    
-    def _calculate_expansion_connections(self, input_dim: int, 
-                                       output_dim: int) -> dict:
-        """
-        Calculate which inputs connect to which outputs for expansion.
+        # For identity, create an MPO with identity-like structure
+        # This is a simplified version - might need more sophisticated implementation
         
-        Returns:
-            Dict mapping input indices to list of output indices
-        """
-        connections = {}
-        
-        # Simple strategy: distribute inputs evenly across outputs
-        outputs_per_input = output_dim / input_dim
-        
-        for i in range(input_dim):
-            start = int(i * outputs_per_input)
-            end = int((i + 1) * outputs_per_input)
-            connections[i] = list(range(start, end))
-        
-        # Ensure all outputs are covered
-        all_outputs = set()
-        for outputs in connections.values():
-            all_outputs.update(outputs)
-        
-        if len(all_outputs) < output_dim:
-            # Distribute remaining outputs
-            remaining = set(range(output_dim)) - all_outputs
-            for i, out_idx in enumerate(remaining):
-                input_idx = i % input_dim
-                connections[input_idx].append(out_idx)
-        
-        return connections
-    
-    def _get_tensor_shape(self, idx: int, config: LayerConfig) -> tuple:
-        """Get shape for tensor at given index."""
-        # Simplified - real implementation would be more sophisticated
-        if self.operation_type == "compression":
-            return (config.bond_dim, config.bond_dim, 
-                    config.phys_dim[0], config.phys_dim[1])
-        else:  # expansion
-            return (config.bond_dim, config.bond_dim,
-                    config.phys_dim[0], config.phys_dim[1])
-    
-    def _get_tensor_indices(self, idx: int, config: LayerConfig, 
-                          connections: dict = None) -> list:
-        """Get indices for tensor at given position."""
-        # Simplified - real implementation would handle proper connectivity
-        if self.operation_type == "compression":
-            return [f'vL{idx}', f'vR{idx}', f'k{idx}', f'b{idx}']
-        else:  # expansion
-            # Input indices based on connections
-            input_idx = self._find_input_for_output(idx, connections)
-            return [f'vL{idx}', f'vR{idx}', f'k{input_idx}', f'b{idx}']
-    
-    def _find_input_for_output(self, output_idx: int, connections: dict) -> int:
-        """Find which input connects to given output."""
-        for input_idx, outputs in connections.items():
-            if output_idx in outputs:
-                return input_idx
-        return 0  # Fallback
-    
-    def _create_identity_placeholder(self, config):
-        """Create placeholder for identity operation."""
-        # For identity, we need actual tensors for training
-        # Create a simple pass-through tensor network
-        import jax.numpy as jnp
-        
+        # Create MPO-like structure
         tensors = []
+        keys = jax.random.split(key, config.input_dim)
+        
         for i in range(config.input_dim):
-            # Create identity-like tensor
-            # Shape: (bond_left, bond_right, phys_up, phys_down)
-            shape = (config.bond_dim, config.bond_dim, 
-                    config.phys_dim[0], config.phys_dim[1])
+            # Shape: (left_bond, right_bond, phys_up, phys_down)
+            if i == 0:
+                shape = (1, config.bond_dim, config.phys_dim[0], config.phys_dim[1])
+            elif i == config.input_dim - 1:
+                shape = (config.bond_dim, 1, config.phys_dim[0], config.phys_dim[1])
+            else:
+                shape = (config.bond_dim, config.bond_dim, config.phys_dim[0], config.phys_dim[1])
             
-            # Initialize as near-identity
-            data = jnp.zeros(shape)
-            # Set diagonal elements
-            min_dim = min(shape)
-            for j in range(min_dim):
-                data = data.at[j, j, j % config.phys_dim[0], j % config.phys_dim[1]].set(1.0)
+            # Initialize with identity-like structure
+            data = initializer(keys[i], shape)
             
-            # Create tensor with proper indices
+            # Add identity bias
+            if config.add_identity:
+                # Make diagonal elements stronger
+                if shape[0] == shape[1]:  # Square virtual bonds
+                    for j in range(min(shape[0], shape[2], shape[3])):
+                        data = data.at[j, j, j % shape[2], j % shape[3]].add(1.0)
+            
+            # Create indices
             inds = [f'vL{i}', f'vR{i}', f'k{i}', f'b{i}']
+            
+            # Create tensor
             tensor = qtn.Tensor(data=data, inds=inds, tags=[f'I{i}'])
             tensors.append(tensor)
         
@@ -272,6 +173,10 @@ class UnifiedCascadableOperator(CascadableOperator):
         tn.operation_type = 'identity'
         tn.input_dim = config.input_dim
         tn.output_dim = config.output_dim
+        
+        # Add required attributes for compatibility
+        tn.lower_inds = [f'b{i}' for i in range(config.output_dim)]
+        tn.upper_inds = [f'k{i}' for i in range(config.input_dim)]
         
         return tn
     
@@ -288,38 +193,84 @@ class UnifiedCascadableOperator(CascadableOperator):
             # Use SMPO apply
             return self.implementation.apply(input_mps)
         elif self.operation_type == "expansion":
-            # Custom expansion logic
-            return self._apply_expansion(input_mps)
+            # Use ExpansionOperator apply
+            return self.implementation.apply(input_mps)
         else:
-            # Identity
+            # Identity - contract with MPO-like structure
             return self._apply_identity(input_mps)
-    
-    def _apply_expansion(self, input_mps):
-        """Apply expansion operation."""
-        if self.debug:
-            print(f"[EXPANSION] Applying expansion: {self.config.input_dim}→{self.config.output_dim}")
-        
-        # Placeholder - real implementation would:
-        # 1. Contract input MPS with expansion tensors
-        # 2. Handle the index routing properly
-        # 3. Return expanded MPS
-        
-        # For now, just return input with warning
-        print(f"[WARNING] Expansion apply not yet fully implemented")
-        return input_mps
     
     def _apply_identity(self, input_mps):
         """Apply identity operation."""
         if self.debug:
             print(f"[IDENTITY] Applying identity transformation")
         
-        # For now, just pass through
-        # Real implementation would apply the identity tensors
-        return input_mps
+        # Contract input MPS with identity MPO
+        input_copy = input_mps.copy()
+        identity_copy = self.implementation.copy()
+        
+        # Align indices
+        for i in range(self.config.input_dim):
+            # Find the physical index in input tensor
+            input_tensor = input_copy.tensors[i]
+            
+            # The physical index is usually the one with smallest dimension
+            # or the one that's not a bond index
+            phys_idx = None
+            for idx in input_tensor.inds:
+                if 'bond' not in idx and 'v' not in idx:
+                    phys_idx = idx
+                    break
+            
+            if phys_idx is None:
+                # Fallback: smallest dimension
+                phys_idx = min(input_tensor.inds, key=lambda x: input_tensor.ind_size(x))
+            
+            # Reindex to match our k indices
+            input_tensor.reindex_({phys_idx: f'k{i}'})
+        
+        # Contract
+        result = input_copy | identity_copy
+        
+        # Contract all k indices
+        for i in range(self.config.input_dim):
+            k_ind = f'k{i}'
+            if k_ind in result.ind_map:
+                result.contract_ind(k_ind)
+        
+        # Convert back to MPS
+        output_arrays = []
+        for i in range(self.config.output_dim):
+            tensor = result[f'I{i}']
+            data = tensor.data
+            
+            # Ensure correct MPS shape
+            if len(data.shape) > 3:
+                data = jnp.squeeze(data)
+            
+            output_arrays.append(data)
+        
+        from quimb.tensor.tensor_1d import MatrixProductState
+        output_mps = MatrixProductState(output_arrays, shape='lrp')
+        
+        if self.debug:
+            print(f"[IDENTITY] Output norm: {output_mps.norm():.6f}")
+        
+        return output_mps
     
     def get_config(self) -> LayerConfig:
         """Return configuration."""
         return self.config
+    
+    @property
+    def tensors(self):
+        """Access to underlying tensors for training."""
+        if hasattr(self.implementation, 'tensors'):
+            return self.implementation.tensors
+        elif hasattr(self.implementation, 'tn') and hasattr(self.implementation.tn, 'tensors'):
+            return self.implementation.tn.tensors
+        else:
+            # Fallback for identity/custom implementations
+            return list(self.implementation.tensors) if hasattr(self.implementation, '__iter__') else []
     
     def __repr__(self):
         """String representation."""
