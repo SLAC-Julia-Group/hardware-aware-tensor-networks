@@ -240,7 +240,7 @@ def create_trainable_autoencoder(layer_dims: List[int],
             learning_rate=learning_rate,
             train_type=0, # 0 = unsupervised training  
             strategy='global',
-            device='gpu' if jax.devices()[0].device_kind == 'gpu' else 'cpu'
+            device='gpu' if "NVIDIA" in jax.devices()[0].device_kind else 'cpu'
         )
     
     return model
