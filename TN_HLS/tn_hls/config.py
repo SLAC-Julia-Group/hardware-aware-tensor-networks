@@ -117,6 +117,14 @@ class SMPOLayer:
 
 
 @dataclass
+class OutputConfig:
+    """Output configuration"""
+    format: str = "direct"  # "direct" or "streaming"
+    compute_norm: bool = True  # Whether to compute MPS norm as score
+    final_layer: Optional[str] = None
+    
+    
+@dataclass
 class ModelConfig:
     """Complete model configuration"""
     name: str
@@ -125,7 +133,7 @@ class ModelConfig:
     embedding_type: str
     data_type: str
     layers: List[SMPOLayer]
-    output_streaming: Dict[str, Any]
+    output_config: OutputConfig = field(default_factory=OutputConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
     
     def validate(self):
@@ -203,6 +211,16 @@ def load_model_config(config_file: str) -> ModelConfig:
             parallel_contractions=hw_data.get('parallel_contractions', True)
         )
     
+    # Parse output config
+    output_config = OutputConfig()
+    if 'output' in config_data:
+        out_data = config_data['output']
+        output_config = OutputConfig(
+            format=out_data.get('format', 'direct'),
+            compute_norm=out_data.get('compute_norm', True),
+            final_layer=out_data.get('final_layer', None)
+        )
+    
     # Parse layers
     layers = []
     for layer_data in config_data['layers']:
@@ -237,7 +255,7 @@ def load_model_config(config_file: str) -> ModelConfig:
         embedding_type=config_data['input']['embedding'],
         data_type=config_data.get('data_type', 'float'),
         layers=layers,
-        output_streaming=config_data.get('output', {}),
+        output_config=output_config,
         hardware=hardware
     )
     
@@ -292,9 +310,7 @@ def create_example_config(output_file: str = "model_config.yml"):
                 "weight_name": "weights2",
                 "optimize_non_output": True,
                 "truncation": {
-                    "enabled": True,
-                    "max_bond": 16,
-                    "method": "slice"
+                    "enabled": False
                 }
             },
             {
@@ -307,15 +323,14 @@ def create_example_config(output_file: str = "model_config.yml"):
                 "weight_name": "weights3",
                 "optimize_non_output": True,
                 "truncation": {
-                    "enabled": True,
-                    "max_bond": 8,
-                    "method": "slice"
+                    "enabled": False
                 }
             }
         ],
         
         "output": {
-            "format": "streaming",
+            "format": "direct",
+            "compute_norm": True,  # Compute MPS norm as score
             "final_layer": "layer3"
         }
     }
@@ -331,15 +346,10 @@ def print_model_summary(config: ModelConfig):
     print(f"\nModel: {config.name}")
     print(f"Architecture: {config.input_sites}", end="")
     
-    bonds = config.get_composite_bonds()
-    for i, layer in enumerate(config.layers):
-        bond_info = bonds[i]
-        if layer.truncation.enabled and bond_info['composite_right'] > layer.truncation.max_bond:
-            # Show truncation: original→truncated
-            print(f" → {layer.output_sites}({bond_info['composite_right']}↓{layer.truncation.max_bond})", end="")
-        else:
-            # Just show the bond dimension
-            print(f" → {layer.output_sites}({bond_info['composite_right']})", end="")
+    for layer in config.layers:
+        print(f" → {layer.output_sites}", end="")
+        if layer.truncation.enabled:
+            print(f"(↓{layer.truncation.max_bond})", end="")
     
     print(f"\nEmbedding: {config.embedding_type}")
     print(f"Data type: {config.data_type}")

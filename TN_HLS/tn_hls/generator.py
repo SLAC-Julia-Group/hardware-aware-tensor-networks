@@ -285,6 +285,80 @@ class ContractNeighbors(Block):
         }
 
 
+class ComputeNorm(Block):
+    """Compute the norm squared of final MPS as score"""
+    def __init__(self, num_sites: int, layer_name: str, layer_idx: int, 
+                 is_truncated: bool = False, **kwargs):
+        self.num_sites = num_sites
+        self.layer_name = layer_name
+        self.layer_idx = layer_idx
+        self.is_truncated = is_truncated
+    
+    def generate_declarations(self) -> str:
+        return """    // MPS norm computation
+    data_t norm_squared = 0.0;"""
+    
+    def generate_compute(self) -> str:
+        if self.num_sites != 3:
+            return f"    // TODO: Norm computation for {self.num_sites} sites not implemented yet"
+        
+        layer_num = self.layer_idx + 1
+        
+        # Generate norm computation for 3-site MPS
+        code = [f"""    // Compute norm squared of final {self.num_sites}-site MPS"""]
+        
+        # Generate physical index loops  
+        phys_loops = []
+        for i in range(self.num_sites):
+            indent = "    " + "    " * i
+            phys_loops.append(f"{indent}for (int p{i} = 0; p{i} < LAYER{layer_num}_PHYS_OUT; p{i}++) {{")
+        
+        # Determine bond constant name
+        if self.is_truncated:
+            bond_const = f"LAYER{layer_num}_TRUNCATED_BOND"
+        else:
+            bond_const = f"LAYER{layer_num}_COMPOSITE_BOND"
+        
+        # Generate bond loops
+        bond_loops = []
+        for b in range(self.num_sites - 1):
+            indent = "    " + "    " * (self.num_sites + b)
+            bond_loops.append(f"{indent}for (int bond{b}{b+1} = 0; bond{b}{b+1} < {bond_const}; bond{b}{b+1}++) {{")
+        
+        # Add all opening braces
+        code.extend(phys_loops)
+        code.extend(bond_loops)
+        
+        # Add pipeline pragma
+        indent = "    " + "    " * (2 * self.num_sites - 1)
+        code.append(f"{indent}#pragma HLS PIPELINE II=1")
+        code.append("")
+        
+        # Extract tensor values
+        code.append(f"{indent}// Extract tensor values")
+        code.append(f"{indent}data_t a0 = {self.layer_name}[0][p0][0][bond01];  // Left bond = 0 (dummy)")
+        code.append(f"{indent}data_t a1 = {self.layer_name}[1][p1][bond01][bond12];")
+        code.append(f"{indent}data_t a2 = {self.layer_name}[2][p2][bond12][0];  // Right bond = 0 (dummy)")
+        code.append("")
+        
+        # Accumulate norm
+        code.append(f"{indent}// Accumulate squared values")
+        code.append(f"{indent}norm_squared += a0 * a0 * a1 * a1 * a2 * a2;")
+        
+        # Close all loops
+        for i in range(2 * self.num_sites - 1):
+            indent = "    " + "    " * (2 * self.num_sites - 2 - i)
+            code.append(f"{indent}}}")
+        
+        code.append("")
+        code.append("    // norm_squared is the score")
+        
+        return "\n".join(code)
+    
+    def get_output_info(self):
+        return {"has_norm_score": True}
+
+
 class TruncateBonds(Block):
     """Optional bond truncation"""
     def __init__(self, layer_name: str, layer_idx: int, max_bond: int, method: str = "slice"):
@@ -376,6 +450,18 @@ class HLSGenerator:
             else:
                 current_bond = composite_bond
         
+        # Add norm computation if enabled
+        if self.model.output_config.compute_norm:
+            last_layer = self.model.layers[-1]
+            last_layer_idx = len(self.model.layers) - 1
+
+            pipeline.append(ComputeNorm(
+                num_sites=last_layer.output_sites,
+                layer_name=f"layer{last_layer_idx + 1}_contracted",
+                layer_idx=last_layer_idx,
+                is_truncated=last_layer.truncation.enabled
+            ))
+        
         return pipeline
     
     def generate(self) -> str:
@@ -401,12 +487,16 @@ class HLSGenerator:
         # Declarations
         code.append("\n    // ===== DECLARATIONS =====")
         for block in self.pipeline:
-            code.append(block.generate_declarations())
+            decl = block.generate_declarations()
+            if decl:  # Only add if not empty
+                code.append(decl)
         
         # Computations
         code.append("\n    // ===== COMPUTATIONS =====")
         for block in self.pipeline:
-            code.append(block.generate_compute())
+            compute = block.generate_compute()
+            if compute:  # Only add if not empty
+                code.append(compute)
         
         # Footer
         code.append(self._generate_footer())
@@ -414,11 +504,15 @@ class HLSGenerator:
         return "\n".join(code)
     
     def _generate_header(self) -> str:
-        return f"""//
+        header = f"""//
 // Generated HLS Code for: {self.model.name}
-// Architecture: {self._get_architecture_string()}
-//
-"""
+// Architecture: {self._get_architecture_string()}"""
+        
+        if self.model.output_config.compute_norm:
+            header += "\n// Output: MPS tensors + norm squared score"
+        
+        header += "\n//\n"
+        return header
     
     def _generate_includes(self) -> str:
         includes = """#include <hls_stream.h>
@@ -486,12 +580,20 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
                           f"[LAYER{layer_num}_PHYS_IN][LAYER{layer_num}_PHYS_OUT]"
                           f"[LAYER{layer_num}_SMPO_BOND][LAYER{layer_num}_SMPO_BOND],")
         
-        # Output parameter
-        sig.append(f"    data_t output[OUTPUT_DIM]")
+        # Output parameters
+        if self.model.output_config.compute_norm:
+            sig.append(f"    data_t output[OUTPUT_DIM],")
+            sig.append(f"    data_t* norm_score  // Output: norm squared of final MPS")
+        else:
+            sig.append(f"    data_t output[OUTPUT_DIM]")
+            
         sig.append(""") {
 #pragma HLS INTERFACE s_axilite port=return
 #pragma HLS INTERFACE m_axi port=input offset=slave
 #pragma HLS INTERFACE m_axi port=output offset=slave""")
+        
+        if self.model.output_config.compute_norm:
+            sig.append("#pragma HLS INTERFACE s_axilite port=norm_score")
         
         # Add interface pragmas for weights
         for i in range(len(self.model.layers)):
@@ -509,21 +611,30 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         else:
             final_bond = f"LAYER{num_layers}_COMPOSITE_BOND"
         
-        return f"""
+        footer = ["""
     // ===== COPY FINAL OUTPUT =====
     // For now, just copy first physical component of each output site
-    for (int i = 0; i < OUTPUT_DIM; i++) {{
+    for (int i = 0; i < OUTPUT_DIM; i++) {
         // Sum over all bonds (full contraction)
-        data_t sum = 0;
-        for (int l = 0; l < {final_bond}; l++) {{
+        data_t sum = 0;"""]
+        
+        footer.append(f"""        for (int l = 0; l < {final_bond}; l++) {{
             for (int r = 0; r < {final_bond}; r++) {{
                 sum += layer{num_layers}_contracted[i][0][l][r];  // Using p=0 for now
             }}
         }}
         output[i] = sum;
-    }}
-    
-}} // end tn_model"""
+    }}""")
+        
+        if self.model.output_config.compute_norm:
+            footer.append("""
+    // Write norm score
+    *norm_score = norm_squared;""")
+        
+        footer.append("""
+} // end tn_model""")
+        
+        return "\n".join(footer)
     
     def _get_architecture_string(self) -> str:
         """Generate architecture string like '56 → 19 → 7 → 3'"""

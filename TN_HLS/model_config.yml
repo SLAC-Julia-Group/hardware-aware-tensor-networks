@@ -47,5 +47,6 @@ layers:
     max_bond: 8
     method: slice
 output:
-  format: streaming
+  format: direct
+  compute_norm: true
   final_layer: layer3
