@@ -63,7 +63,7 @@ class RandomBatchSampler(Sampler):
 
 
 class HDF5Dataset(Dataset):
-    def __init__(self, file_path, key="Particles", norm=False):
+    def __init__(self, file_path, key="Particles", norm=False, skip_MET_eta=True):
         self.file_path = file_path       
         self.file = h5py.File(self.file_path, 'r')
 
@@ -73,6 +73,8 @@ class HDF5Dataset(Dataset):
 
         self.stats = None # mean and var
         self.norm = norm
+        self.skip_MET_eta = skip_MET_eta
+        self.n_features = 56 if skip_MET_eta else 57
 
     def __len__(self):
         # n_jets dimension
@@ -99,66 +101,119 @@ class HDF5Dataset(Dataset):
         self.ds.read_direct(batch, object_idx) # load data to batch
     
         B = batch.shape[0]
-        features = np.empty((B, 56), dtype=batch.dtype)
+        features = np.empty((B, self.n_features), dtype=batch.dtype)
 
-        for i, (name, extract_fn) in enumerate(var_dict.items()):
-            features[:, i] = extract_fn(batch)
-            if self.stats and name in self.stats:
-                mu = self.stats[name]['mean']
-                std = np.sqrt(self.stats[name]['variance']) + 1e-6
-                features[:, i] = (features[:, i] - mu) / std
-                if np.any(np.isnan(features[:, i])): 
-                    print("warning! ", mu, std, " caused some nans")
+        # Extract features grouped by particle
+        idx = 0
+        
+        # MET (1 particle)
+        features[:, idx] = batch[:, 0, 0]  # MET pt
+        idx += 1
+        if not self.skip_MET_eta:
+            features[:, idx] = batch[:, 0, 1]  # MET eta
+            idx += 1
+        features[:, idx] = batch[:, 0, 2]  # MET phi
+        idx += 1
+        
+        # Electrons (4 particles)
+        for i in range(1, 5):
+            features[:, idx] = batch[:, i, 0]  # pt
+            features[:, idx+1] = batch[:, i, 1]  # eta
+            features[:, idx+2] = batch[:, i, 2]  # phi
+            idx += 3
+        
+        # Muons (4 particles)
+        for i in range(5, 9):
+            features[:, idx] = batch[:, i, 0]  # pt
+            features[:, idx+1] = batch[:, i, 1]  # eta
+            features[:, idx+2] = batch[:, i, 2]  # phi
+            idx += 3
+        
+        # Jets (10 particles)
+        for i in range(9, 19):
+            features[:, idx] = batch[:, i, 0]  # pt
+            features[:, idx+1] = batch[:, i, 1]  # eta
+            features[:, idx+2] = batch[:, i, 2]  # phi
+            idx += 3
+
+        # Apply statistics-based normalization if available
+        if self.stats:
+            feature_names = self._get_ordered_feature_names()
+            for i, name in enumerate(feature_names):
+                if name in self.stats:
+                    mu = self.stats[name]['mean']
+                    std = np.sqrt(self.stats[name]['variance']) + 1e-6
+                    features[:, i] = (features[:, i] - mu) / std
+                    if np.any(np.isnan(features[:, i])): 
+                        print(f"warning! {name}: mu={mu}, std={std} caused some nans")
 
         # Physics-aware normalization
-        if self.norm:  # norm=True case
-            # MET pt and phi
-            features[:, 0] = features[:, 0] / 1200  # MET pt
-            features[:, 1] = (features[:, 1] + np.pi) / (2 * np.pi)  # MET phi
+        if self.norm:
+            idx = 0
             
-            # Electrons: pt, eta, phi
-            features[:, 2:6] = features[:, 2:6] / 1200  # Electron pt
-            features[:, 6:10] = (features[:, 6:10] + 5) / 10  # Electron eta
-            features[:, 10:14] = (features[:, 10:14] + np.pi) / (2 * np.pi)  # Electron phi
+            # MET
+            features[:, idx] = features[:, idx] / 1200  # MET pt
+            idx += 1
+            if not self.skip_MET_eta:
+                features[:, idx] = (features[:, idx] + 5) / 10  # MET eta
+                idx += 1
+            features[:, idx] = (features[:, idx] + np.pi) / (2 * np.pi)  # MET phi
+            idx += 1
             
-            # Muons: pt, eta, phi
-            features[:, 14:18] = features[:, 14:18] / 800  # Muon pt
-            features[:, 18:22] = (features[:, 18:22] + 5) / 10  # Muon eta
-            features[:, 22:26] = (features[:, 22:26] + np.pi) / (2 * np.pi)  # Muon phi
+            # Electrons
+            for i in range(4):
+                features[:, idx] = features[:, idx] / 1200  # pt
+                features[:, idx+1] = (features[:, idx+1] + 5) / 10  # eta
+                features[:, idx+2] = (features[:, idx+2] + np.pi) / (2 * np.pi)  # phi
+                idx += 3
             
-            # Jets: pt, eta, phi
-            features[:, 26:36] = features[:, 26:36] / 2500  # Jet pt
-            features[:, 36:46] = (features[:, 36:46] + 5) / 10  # Jet eta
-            features[:, 46:56] = (features[:, 46:56] + np.pi) / (2 * np.pi)  # Jet phi
+            # Muons
+            for i in range(4):
+                features[:, idx] = features[:, idx] / 800  # pt
+                features[:, idx+1] = (features[:, idx+1] + 5) / 10  # eta
+                features[:, idx+2] = (features[:, idx+2] + np.pi) / (2 * np.pi)  # phi
+                idx += 3
+            
+            # Jets
+            for i in range(10):
+                features[:, idx] = features[:, idx] / 2500  # pt
+                features[:, idx+1] = (features[:, idx+1] + 5) / 10  # eta
+                features[:, idx+2] = (features[:, idx+2] + np.pi) / (2 * np.pi)  # phi
+                idx += 3
 
         return features
 
+    def _get_ordered_feature_names(self):
+        """Get feature names in the particle-grouped order."""
+        names = []
         
-        # Assign features directly into the pre-allocated array
-        #features[:,  0]  = batch[:, 0, 0]   # MET pt
-        #features[:,  1]  = batch[:, 0, 2]   # MET phi
-    
-        #features[:,  2:6]   = batch[:, 1:5, 0]  # Electron pt
-        #features[:,  6:10]  = batch[:, 1:5, 1]  # Electron eta
-        #features[:, 10:14]  = batch[:, 1:5, 2]  # Electron phi
-    
-        #features[:, 14:18]  = batch[:, 5:9, 0]  # Muon pt
-        #features[:, 18:22]  = batch[:, 5:9, 1]  # Muon eta
-        #features[:, 22:26]  = batch[:, 5:9, 2]  # Muon phi
-    
-        #features[:, 26:36]  = batch[:, 9:19, 0]  # Jet pt
-        #features[:, 36:46]  = batch[:, 9:19, 1]  # Jet eta
-        #features[:, 46:56]  = batch[:, 9:19, 2]  # Jet phi
-    
-        return features  # shape: (B, 56)
+        # MET
+        names.append("met_pt")
+        if not self.skip_MET_eta:
+            names.append("met_eta")
+        names.append("met_phi")
+        
+        # Electrons
+        for i in range(4):
+            names.extend([f"electron{i}_pt", f"electron{i}_eta", f"electron{i}_phi"])
+        
+        # Muons  
+        for i in range(4):
+            names.extend([f"mu{i}_pt", f"mu{i}_eta", f"mu{i}_phi"])
+        
+        # Jets
+        for i in range(10):
+            names.extend([f"jet{i}_pt", f"jet{i}_eta", f"jet{i}_phi"])
+        
+        return names
 
     def close(self):
         self.file.close()
 
     
 
-def load_data(file_path, batch_size=64, shuffle=True, num_workers=0, drop_last=False, norm=False):
-    dataset = HDF5Dataset(file_path, norm=norm)
+def load_data(file_path, batch_size=64, shuffle=True, num_workers=0, drop_last=False, norm=False, skip_MET_eta=True):
+    dataset = HDF5Dataset(file_path, norm=norm, skip_MET_eta=skip_MET_eta)
     loader = DataLoader(dataset, 
                         batch_size=None, 
                         shuffle=False,  

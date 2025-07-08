@@ -6,6 +6,7 @@ import numpy as np
 
 var_dict = {
     "met_pt":       lambda data: data[:, 0, 0],
+    "met_eta":      lambda data: data[:, 0, 1],
     "met_phi":      lambda data: data[:, 0, 2],
     
     "electron0_pt": lambda data: data[:, 1, 0],

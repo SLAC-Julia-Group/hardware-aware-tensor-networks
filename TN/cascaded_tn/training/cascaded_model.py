@@ -195,6 +195,7 @@ def create_trainable_autoencoder(layer_dims: List[int],
                                optimizer=None,
                                learning_rate: float = 0.01,
                                key=None,
+                               phys_dims: Optional[List[int]] = None,
                                **kwargs) -> CascadedModel:
     """
     Convenience function to create a trainable autoencoder.
@@ -208,6 +209,7 @@ def create_trainable_autoencoder(layer_dims: List[int],
         optimizer: Optimizer (e.g., optax.adam)
         learning_rate: Learning rate
         key: JAX random key
+        phys_dims: List of physical dimensions [m0, m1, m2, ...] for sequential matching
         **kwargs: Additional arguments for cascade creation
         
     Returns:
@@ -217,6 +219,10 @@ def create_trainable_autoencoder(layer_dims: List[int],
     
     # Extract debug flag if present
     debug = kwargs.pop('debug', False)
+    
+    # Pass phys_dims to the builder
+    if phys_dims is not None:
+        kwargs['phys_dims'] = phys_dims
     
     # Create cascade
     builder = AutoencoderBuilder(debug=debug)

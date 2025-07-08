@@ -78,7 +78,32 @@ class AutoencoderBuilder:
         
         # Handle bond dimensions
         bond_dims = self._prepare_bond_dimensions(full_dims, bond_dims, cyclic)
-        
+
+        # Handle physical dimensions for symmetric case
+        if 'phys_dims' in operator_kwargs and symmetric:
+            phys_dims_list = operator_kwargs['phys_dims']
+            if not isinstance(phys_dims_list, list):
+                raise ValueError("phys_dims must be a list when using symmetric=True")
+            
+            # For symmetric autoencoder, we need to reverse the physical dimensions for decoder
+            encoder_layers = len(layer_dims) - 1
+            decoder_layers = encoder_layers
+            
+            # Validate length
+            if len(phys_dims_list) != len(layer_dims):
+                raise ValueError(
+                    f"For symmetric autoencoder with {len(layer_dims)} layer dimensions, "
+                    f"phys_dims must have {len(layer_dims)} elements, got {len(phys_dims_list)}"
+                )
+            
+            # Create reversed physical dimensions for decoder
+            # Encoder gets [m0, m1, m2, m3] -> decoder gets [m3, m2, m1, m0]
+            encoder_phys_dims = phys_dims_list
+            decoder_phys_dims = phys_dims_list[::-1]
+            
+            # Combine them (excluding the repeated middle dimension)
+            operator_kwargs['phys_dims'] = encoder_phys_dims + decoder_phys_dims[1:]
+
         # Create operators
         operators = self._create_operators(
             full_dims, bond_dims, cyclic, initializer, key, **operator_kwargs
@@ -299,8 +324,27 @@ class AutoencoderBuilder:
         keys = jax.random.split(key, len(full_dims) - 1)
         
         # Extract config-specific kwargs
-        phys_dim = operator_kwargs.pop('phys_dim', (2, 2))
+        phys_dims = operator_kwargs.pop('phys_dims', None) # List of physical dimensions for each layer
+        phys_dim = operator_kwargs.pop('phys_dim', (2, 2)) # Default physical dimension
         add_identity = operator_kwargs.pop('add_identity', False)
+
+        if phys_dims is not None:
+            if not isinstance(phys_dims, list):
+                raise ValueError("phys_dims must be a list of dimensions")
+            
+            # Validate we have the right number of dimensions
+            num_layers = len(full_dims) - 1
+            if len(phys_dims) != num_layers + 1:
+                raise ValueError(
+                    f"phys_dims must have {num_layers + 1} dimensions for {num_layers} layers, "
+                    f"got {len(phys_dims)}"
+                )
+            
+            # Create tuples for each layer
+            layer_phys_dims = [(phys_dims[i], phys_dims[i+1]) for i in range(num_layers)]
+        else:
+            # Use the same phys_dim for all layers
+            layer_phys_dims = [phys_dim] * len(full_dims - 1)
         
         for i in range(len(full_dims) - 1):
             config = LayerConfig(
@@ -308,7 +352,7 @@ class AutoencoderBuilder:
                 output_dim=full_dims[i + 1],
                 bond_dim=bond_dims[i],
                 cyclic=cyclic,
-                phys_dim=phys_dim,
+                phys_dim=layer_phys_dims[i],
                 add_identity=add_identity
             )
             
@@ -324,7 +368,7 @@ class AutoencoderBuilder:
             
             if self.debug:
                 op_type = "↓" if config.output_dim < config.input_dim else "↑"
-                print(f"  Layer {i}: {full_dims[i]}→{full_dims[i+1]} ({op_type}), χ={bond_dims[i]}")
+                print(f"  Layer {i}: {full_dims[i]}→{full_dims[i+1]} ({op_type}), χ={bond_dims[i]}, φ={layer_phys_dims[i]}")
         
         return operators
 
@@ -332,9 +376,17 @@ class AutoencoderBuilder:
 def create_standard_autoencoder(input_dim: int,
                               compression_ratios: List[float] = [0.5, 0.25, 0.125],
                               cyclic: bool = False,
+                              phys_dims: Optional[List[int]] = None,
                               **kwargs) -> TensorNetworkCascade:
     """
     Convenience function to create standard autoencoder architectures.
+    
+    Args:
+        input_dim: Input dimension
+        compression_ratios: List of compression ratios for each layer
+        cyclic: Whether to use cyclic boundary conditions
+        phys_dims: Optional list of physical dimensions [m0, m1, m2, ...] for sequential matching
+        **kwargs: Additional arguments passed to create_autoencoder
     
     Examples:
         # MNIST-like: 784 → 392 → 196 → 98 → 196 → 392 → 784
@@ -342,6 +394,9 @@ def create_standard_autoencoder(input_dim: int,
         
         # Custom ratios
         ae = create_standard_autoencoder(1024, [0.5, 0.125])  # 1024 → 512 → 128 → 512 → 1024
+        
+        # With custom physical dimensions
+        ae = create_standard_autoencoder(784, [0.5, 0.25], phys_dims=[2, 3, 4, 5])
     """
     builder = AutoencoderBuilder()
     
@@ -351,5 +406,9 @@ def create_standard_autoencoder(input_dim: int,
     for ratio in compression_ratios:
         current = int(current * ratio)
         dims.append(current)
+    
+    # Pass phys_dims if provided
+    if phys_dims is not None:
+        kwargs['phys_dims'] = phys_dims
     
     return builder.create_autoencoder(dims, cyclic=cyclic, **kwargs)
