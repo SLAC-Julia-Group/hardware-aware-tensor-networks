@@ -5,7 +5,7 @@ This module provides Model classes that integrate with tn4ml's training
 infrastructure while using our cascaded architecture.
 """
 
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Union, Dict, Any, Callable
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -191,6 +191,7 @@ class CascadedModel(Model):
 
 def create_trainable_autoencoder(layer_dims: List[int],
                                cyclic: bool = False,
+                               enable_relu: Optional[Union[bool, List[int]]] = None,
                                loss_function=None,
                                optimizer=None,
                                learning_rate: float = 0.01,
@@ -230,6 +231,7 @@ def create_trainable_autoencoder(layer_dims: List[int],
         layer_dims=layer_dims,
         cyclic=cyclic,
         key=key,
+        enable_relu=enable_relu,
         **kwargs  # Pass remaining kwargs
     )
     

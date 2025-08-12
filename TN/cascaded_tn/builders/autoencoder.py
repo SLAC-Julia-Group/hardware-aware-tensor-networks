@@ -37,6 +37,7 @@ class AutoencoderBuilder:
                           initializer=None,
                           key=None,
                           validate_dims: bool = True,
+                          enable_relu: Optional[Union[bool, List[int]]] = None,
                           **operator_kwargs) -> TensorNetworkCascade:
         """
         Create a complete autoencoder cascade.
@@ -79,6 +80,18 @@ class AutoencoderBuilder:
         # Handle bond dimensions
         bond_dims = self._prepare_bond_dimensions(full_dims, bond_dims, cyclic)
 
+        # Process ReLU configuration
+        relu_configs = [False] * (len(full_dims) - 1)
+        if enable_relu is not None:
+            if isinstance(enable_relu, bool) and enable_relu:
+                # Enable for all layers
+                relu_configs = [True] * (len(full_dims) - 1)
+            elif isinstance(enable_relu, list):
+                # Enable for specific layers
+                for layer_idx in enable_relu:
+                    if 0 <= layer_idx < len(relu_configs):
+                        relu_configs[layer_idx] = True
+
         # Handle physical dimensions for symmetric case
         if 'phys_dims' in operator_kwargs and symmetric:
             phys_dims_list = operator_kwargs['phys_dims']
@@ -106,7 +119,7 @@ class AutoencoderBuilder:
 
         # Create operators
         operators = self._create_operators(
-            full_dims, bond_dims, cyclic, initializer, key, **operator_kwargs
+            full_dims, bond_dims, relu_configs, cyclic, initializer, key, **operator_kwargs
         )
         
         # Create cascade
@@ -315,6 +328,7 @@ class AutoencoderBuilder:
     def _create_operators(self,
                          full_dims: List[int],
                          bond_dims: List[int],
+                         relu_configs: List[bool],
                          cyclic: bool,
                          initializer,
                          key,
@@ -353,7 +367,8 @@ class AutoencoderBuilder:
                 bond_dim=bond_dims[i],
                 cyclic=cyclic,
                 phys_dim=layer_phys_dims[i],
-                add_identity=add_identity
+                add_identity=add_identity,
+                enable_relu=relu_configs[i]
             )
             
             op = UnifiedCascadableOperator(

@@ -61,6 +61,7 @@ class LayerConfig:
     cyclic: bool = False
     phys_dim: Tuple[int, int] = (2, 2)
     add_identity: bool = False
+    enable_relu: bool = False  # Apply ReLU activation after this layer
     
     def __post_init__(self):
         """Validate configuration after initialization."""

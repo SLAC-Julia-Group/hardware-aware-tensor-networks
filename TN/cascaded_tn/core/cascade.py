@@ -118,6 +118,13 @@ class TensorNetworkCascade:
             try:
                 # Apply operator
                 current = op.apply(current)
+
+                # Apply ReLU if configured for this layer
+                if op.config.enable_relu:
+                    for tensor in current.tensors:
+                        tensor.modify(data=jnp.maximum(0, tensor.data))
+                    if self.debug:
+                        print(f"  Applied ReLU activation")
                 
                 if self.debug:
                     # Record timing and info
