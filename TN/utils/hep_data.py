@@ -216,7 +216,7 @@ def plot_physics_features(structured_dataset, output_dir="feature_plots", max_ba
     
     print(f"\nAll plots saved to '{output_dir}' directory")
 
-def prepare_training_data_from_structured(structured_dataset, max_batches=None, dtype=np.float64):
+def prepare_training_data_from_structured(structured_dataset, max_batches=None, dtype=np.float32):
     """
     Convert structured dataset to a format suitable for tensor network training.
     
@@ -276,7 +276,7 @@ def prepare_training_data_from_structured(structured_dataset, max_batches=None, 
     # Ensure correct data type
     return train_data.astype(dtype)
 
-def h5_to_jax_array(h5_file_path, dataset_key="Particles", dtype=np.float64):
+def h5_to_jax_array(h5_file_path, dataset_key="Particles", dtype=np.float32):
     """
     Load H5 file data and convert directly to JAX array format with minimal memory overhead.
     
@@ -321,7 +321,7 @@ def h5_to_jax_array(h5_file_path, dataset_key="Particles", dtype=np.float64):
     return jnp.asarray(output)
 
 class LazyH5Array:
-    def __init__(self, h5_file_path: str, dataset_key: str = "Particles", dtype=np.float64):
+    def __init__(self, h5_file_path: str, dataset_key: str = "Particles", dtype=np.float32):
         """
         A lazy loading array that behaves like a JAX array but only loads data on demand.
         

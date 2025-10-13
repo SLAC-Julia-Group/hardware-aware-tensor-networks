@@ -24,7 +24,7 @@ def evaluate_validation_error(val_loader, autoencoder, compute_error_batch):
     
     # Evaluate in batches for efficiency
     for batch in val_loader:
-        batch = jax.numpy.array(batch, dtype=jnp.float64)
+        batch = jax.numpy.array(batch, dtype=jnp.float32)
         error = float(compute_error_batch(batch, *autoencoder.arrays))
         total_error += error
         n_batches += 1
