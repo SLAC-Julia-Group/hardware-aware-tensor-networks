@@ -140,6 +140,7 @@ class CascadableSMPO(CascadableOperator):
             L=config.input_dim,
             initializer=initializer,
             key=key,
+            dtype=jnp.float32,
             bond_dim=config.bond_dim,
             phys_dim=config.phys_dim,
             cyclic=config.cyclic,
