@@ -7,6 +7,7 @@ infrastructure while using our cascaded architecture.
 
 from typing import Optional, List, Union, Dict, Any, Callable
 import numpy as np
+import pickle
 import jax
 import jax.numpy as jnp
 import quimb.tensor as qtn
@@ -188,6 +189,225 @@ class CascadedModel(Model):
         
         print("="*60 + "\n")
 
+    def save(self, filepath: str, include_optimizer_state: bool = False):
+        """
+        Save the trained model to disk with full configuration.
+        
+        Saves model architecture, trained weights, and optionally optimizer state.
+        Format is compatible with the load() classmethod for reconstruction.
+        
+        Args:
+            filepath: Path to save the model (will add .pkl if not present)
+            include_optimizer_state: Whether to save optimizer state (default: False)
+            
+        Example:
+            >>> model.save('trained_autoencoder.pkl')
+            >>> model.save('checkpoint_epoch_100.pkl', include_optimizer_state=True)
+        """
+        import pickle
+        
+        # Ensure .pkl extension
+        if not filepath.endswith('.pkl'):
+            filepath = filepath + '.pkl'
+        
+        # Extract configuration from cascade
+        config = self._extract_config()
+        
+        # Get trained weights (convert JAX arrays to numpy for serialization)
+        weights = {
+            'arrays': [np.array(jax.device_get(arr)) for arr in self.arrays],
+            'tensor_shapes': [arr.shape for arr in self.arrays]
+        }
+        
+        # Build save dictionary
+        save_dict = {
+            'config': config,
+            'weights': weights,
+            'metadata': {
+                'model_type': 'CascadedModel',
+                'n_params': self.nparams(),
+                'n_layers': len(self.cascade.operators),
+                'n_tensors': self.L
+            }
+        }
+        
+        # Optionally include optimizer state
+        if include_optimizer_state and hasattr(self, 'opt_state') and self.opt_state is not None:
+            # Convert optimizer state to numpy for serialization
+            save_dict['opt_state'] = jax.tree_map(lambda x: np.array(jax.device_get(x)) if hasattr(x, 'shape') else x, 
+                                                   self.opt_state)
+            save_dict['optimizer_config'] = {
+                'learning_rate': getattr(self, 'learning_rate', None),
+            }
+        
+        # Save to disk
+        with open(filepath, 'wb') as f:
+            pickle.dump(save_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
+        if self.debug:
+            print(f"[SAVED] Model saved to {filepath}")
+            print(f"  - {self.nparams():,} parameters")
+            print(f"  - {len(self.cascade.operators)} layers")
+            print(f"  - Optimizer state: {'included' if include_optimizer_state else 'not included'}")
+    
+    def _extract_config(self) -> dict:
+        """
+        Extract configuration from the cascade for saving.
+        
+        Returns:
+            dict: Configuration dictionary with all parameters needed for reconstruction
+        """
+        # Get layer dimensions by tracing through operators
+        layer_dims = [self.cascade.operators[0].config.input_dim]
+        bond_dims = []
+        phys_dims = [self.cascade.operators[0].config.phys_dim[0]]  # Input phys_dim
+        enable_relu = []
+        
+        for op in self.cascade.operators:
+            layer_dims.append(op.config.output_dim)
+            bond_dims.append(op.config.bond_dim)
+            phys_dims.append(op.config.phys_dim[1])  # Output phys_dim
+            enable_relu.append(op.config.enable_relu)
+        
+        # Check if symmetric (does encoder match decoder in reverse?)
+        symmetric = self._check_if_symmetric(layer_dims)
+        
+        if symmetric:
+            # Only store encoder half for symmetric architectures
+            mid = len(layer_dims) // 2 + 1
+            layer_dims = layer_dims[:mid]
+            bond_dims = bond_dims[:mid-1]
+            phys_dims = phys_dims[:mid]
+            enable_relu = enable_relu[:mid-1]
+        
+        # Find which layers have ReLU enabled (as indices)
+        relu_indices = [i for i, enabled in enumerate(enable_relu) if enabled]
+        
+        config = {
+            'layer_dims': layer_dims,
+            'bond_dims': bond_dims,
+            'phys_dims': phys_dims,
+            'enable_relu': relu_indices,  # Store as indices for cleaner format
+            'cyclic': self.cascade.operators[0].config.cyclic,
+            'symmetric': symmetric,
+            'add_identity': self.cascade.operators[0].config.add_identity,
+        }
+        
+        return config
+    
+    def _check_if_symmetric(self, layer_dims: list) -> bool:
+        """
+        Check if architecture is symmetric (autoencoder pattern).
+        
+        Args:
+            layer_dims: List of layer dimensions
+            
+        Returns:
+            bool: True if symmetric autoencoder architecture
+        """
+        if len(layer_dims) % 2 == 0:
+            return False
+        mid = len(layer_dims) // 2
+        return layer_dims[:mid+1] == layer_dims[mid:][::-1]
+    
+    @classmethod
+    def load(cls, filepath: str, configure_training: bool = False, 
+             optimizer=None, learning_rate: float = 1e-3, loss_function=None):
+        """
+        Load a trained model from disk.
+        
+        Args:
+            filepath: Path to the saved model file
+            configure_training: Whether to configure the model for training (default: False)
+            optimizer: Optimizer to use if configure_training=True (default: None -> optax.adam)
+            learning_rate: Learning rate if configure_training=True (default: 1e-3)
+            loss_function: Loss function if configure_training=True (default: None)
+            
+        Returns:
+            CascadedModel: Loaded model with trained weights
+            
+        Example:
+            >>> # Load for inference
+            >>> model = CascadedModel.load('trained_autoencoder.pkl')
+            >>> 
+            >>> # Load and continue training
+            >>> model = CascadedModel.load('checkpoint.pkl', 
+            ...                            configure_training=True,
+            ...                            optimizer=optax.adam,
+            ...                            learning_rate=1e-4,
+            ...                            loss_function=my_loss)
+        """
+        import pickle
+        
+        # Ensure .pkl extension
+        if not filepath.endswith('.pkl'):
+            filepath = filepath + '.pkl'
+        
+        # Load from disk
+        with open(filepath, 'rb') as f:
+            save_dict = pickle.load(f)
+        
+        # Validate format
+        if 'config' not in save_dict or 'weights' not in save_dict:
+            raise ValueError(
+                f"Invalid save file format. Expected 'config' and 'weights' keys. "
+                f"Found: {list(save_dict.keys())}"
+            )
+        
+        config = save_dict['config']
+        weights = save_dict['weights']
+        metadata = save_dict.get('metadata', {})
+        
+        print(f"[LOADING] Model from {filepath}")
+        if metadata:
+            print(f"  - {metadata.get('n_params', 'unknown'):,} parameters")
+            print(f"  - {metadata.get('n_layers', 'unknown')} layers")
+        
+        # Reconstruct model with saved config
+        from ..builders.autoencoder import AutoencoderBuilder
+        
+        builder = AutoencoderBuilder(debug=False)
+        cascade = builder.create_autoencoder(
+            layer_dims=config['layer_dims'],
+            bond_dims=config['bond_dims'],
+            phys_dims=config['phys_dims'],
+            enable_relu=config['enable_relu'],
+            cyclic=config['cyclic'],
+            symmetric=config['symmetric'],
+            key=jax.random.PRNGKey(42),  # Doesn't matter, we're loading weights
+            initializer=jax.nn.initializers.zeros,  # Doesn't matter, we're loading weights
+            add_identity=config.get('add_identity', False),
+        )
+        
+        # Create model
+        model = cls(cascade)
+        
+        # Load trained weights
+        model.update_tensors(weights['arrays'])
+        
+        # Configure for training if requested
+        if configure_training:
+            import optax
+            
+            model.configure(
+                loss=loss_function,
+                optimizer=optimizer or optax.adam,
+                learning_rate=learning_rate,
+                train_type=0,  # unsupervised
+                strategy='global',
+                device='gpu' if "NVIDIA" in jax.devices()[0].device_kind else 'cpu'
+            )
+            
+            # Restore optimizer state if it was saved
+            if 'opt_state' in save_dict:
+                # Convert back from numpy to JAX arrays
+                model.opt_state = jax.tree_map(lambda x: jnp.array(x) if isinstance(x, np.ndarray) else x,
+                                               save_dict['opt_state'])
+                print(f"  - Restored optimizer state")
+        
+        print(f"[LOADED] Successfully loaded model")
+        
+        return model
 
 def create_trainable_autoencoder(layer_dims: List[int],
                                cyclic: bool = False,
