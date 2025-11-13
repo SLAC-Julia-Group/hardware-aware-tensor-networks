@@ -1,10 +1,10 @@
 name: cascaded_tn_autoencoder
-description: "56\u219219\u21927\u21923 autoencoder with automatic spacing"
+description: "19\u21927\u21923 encoder"
 data_type: float
 input:
-  sites: 56
-  features: 2
-  embedding: trigonometric
+  sites: 19
+  features: 3
+  embedding: kinematic
 hardware:
   pipeline_ii: 1
   array_partition_dims:
@@ -13,40 +13,28 @@ hardware:
   parallel_contractions: true
 layers:
 - name: layer1
-  input_sites: 56
-  output_sites: 19
-  phys_in: 2
+  input_sites: 19
+  output_sites: 7
+  phys_in: 3
   phys_out: 2
-  bond_dim: 8
+  bond_dim: 7
   weight_name: weights1
   optimize_non_output: true
   truncation:
     enabled: false
 - name: layer2
-  input_sites: 19
-  output_sites: 7
+  input_sites: 7
+  output_sites: 3
   phys_in: 2
-  phys_out: 2
-  bond_dim: 6
+  phys_out: 3
+  bond_dim: 2
   weight_name: weights2
   optimize_non_output: true
   truncation:
     enabled: false
     max_bond: 16
     method: slice
-- name: layer3
-  input_sites: 7
-  output_sites: 3
-  phys_in: 2
-  phys_out: 2
-  bond_dim: 4
-  weight_name: weights3
-  optimize_non_output: true
-  truncation:
-    enabled: false
-    max_bond: 8
-    method: slice
 output:
   format: direct
   compute_norm: true
-  final_layer: layer3
+  final_layer: layer2
