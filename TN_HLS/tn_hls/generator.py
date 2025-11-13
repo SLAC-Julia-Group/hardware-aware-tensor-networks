@@ -155,7 +155,9 @@ class ApplySMPO(Block):
     """Apply SMPO to MPS - vertical contraction only"""
     def __init__(self, layer_name: str, input_sites: int, spacing: int, 
                  bond_dim: int, phys_in: int, phys_out: int, 
-                 input_bond: int = 1, layer_idx: int = 0, **kwargs):
+                 input_bond: int = 1, layer_idx: int = 0,
+                 data_type: str = "data_t", 
+                 **kwargs):
         self.layer_name = layer_name
         self.input_sites = input_sites
         self.spacing = spacing
@@ -166,11 +168,12 @@ class ApplySMPO(Block):
         self.layer_idx = layer_idx
         self.composite_left = input_bond * bond_dim
         self.composite_right = input_bond * bond_dim
+        self.data_type = data_type
     
     def generate_declarations(self) -> str:
         layer_num = self.layer_idx + 1
         return f"""    // {self.layer_name}: SMPO output tensor
-    data_t {self.layer_name}_out[LAYER{layer_num}_INPUT_SITES][LAYER{layer_num}_PHYS_OUT][LAYER{layer_num}_COMPOSITE_BOND][LAYER{layer_num}_COMPOSITE_BOND] = {{0}};
+    {self.data_type} {self.layer_name}_out[LAYER{layer_num}_INPUT_SITES][LAYER{layer_num}_PHYS_OUT][LAYER{layer_num}_COMPOSITE_BOND][LAYER{layer_num}_COMPOSITE_BOND] = {{0}};
     #pragma HLS ARRAY_PARTITION variable={self.layer_name}_out complete dim=2"""
     
     def generate_compute(self) -> str:
@@ -187,7 +190,7 @@ class ApplySMPO(Block):
             for (int l = 0; l < LAYER{layer_num}_SMPO_BOND; l++) {{
                 for (int r = 0; r < LAYER{layer_num}_SMPO_BOND; r++) {{
                     #pragma HLS PIPELINE II=1
-                    data_t acc = 0;
+                    {self.data_type} acc = 0;
                     for (int f = 0; f < INPUT_FEATURES; f++) {{
                         acc += encoded_input[i][f] * weights{layer_num}[i][f][p_out][l][r];
                     }}
@@ -216,7 +219,7 @@ class ApplySMPO(Block):
                             int left_composite = l_prev * LAYER{layer_num}_SMPO_BOND + l_smpo;
                             int right_composite = r_prev * LAYER{layer_num}_SMPO_BOND + r_smpo;
                             
-                            data_t acc = 0;
+                            {self.data_type} acc = 0;
                             for (int p_in = 0; p_in < LAYER{layer_num}_PHYS_IN; p_in++) {{
                                 acc += {prev_layer}[site][p_in][l_prev][r_prev] * 
                                        weights{layer_num}[site][p_in][p_out][l_smpo][r_smpo];
@@ -244,7 +247,9 @@ class ContractNeighbors(Block):
     """Contract sites based on spacing - handles variable spacing with proper edge cases"""
     def __init__(self, layer_name: str, layer_idx: int, input_sites: int, spacing: int, 
                  output_sites: int, phys_dim: int, bond_left: int, 
-                 bond_right: int, **kwargs):
+                 bond_right: int,
+                 data_type: str = "data_t",
+                 **kwargs):
         self.layer_name = layer_name
         self.layer_idx = layer_idx
         self.input_sites = input_sites
@@ -253,6 +258,7 @@ class ContractNeighbors(Block):
         self.phys_dim = phys_dim
         self.bond_left = bond_left
         self.bond_right = bond_right
+        self.data_type = data_type
     
     def generate_declarations(self) -> str:
         layer_num = self.layer_idx + 1
@@ -264,7 +270,7 @@ class ContractNeighbors(Block):
             bond_str = f"LAYER{layer_num}_COMPOSITE_BOND"
             
         return f"""    // {self.layer_name}: Contracted output [{self.output_sites}]
-    data_t {self.layer_name}_contracted[LAYER{layer_num}_OUTPUT_SITES][LAYER{layer_num}_PHYS_OUT][{bond_str}][{bond_str}] = {{0}};
+    {self.data_type} {self.layer_name}_contracted[LAYER{layer_num}_OUTPUT_SITES][LAYER{layer_num}_PHYS_OUT][{bond_str}][{bond_str}] = {{0}};
     #pragma HLS ARRAY_PARTITION variable={self.layer_name}_contracted complete dim=2"""
     
     def generate_compute(self) -> str:
@@ -299,7 +305,7 @@ class ContractNeighbors(Block):
             for (int l_first = 0; l_first < LAYER{layer_num}_COMPOSITE_BOND; l_first++) {{
                 for (int r_last = 0; r_last < LAYER{layer_num}_COMPOSITE_BOND; r_last++) {{
                     #pragma HLS PIPELINE II=1
-                    data_t acc = 0;
+                    {self.data_type} acc = 0;
                     
                     if (sites_in_group == 1) {{
                         // Single site - just copy
@@ -323,7 +329,7 @@ class ContractNeighbors(Block):
             indent = "                        " + "    " * (group_size - 1)
             
             # First site
-            code.append(f"{indent}data_t prod = {self.layer_name}_out[first_site][p0][l_first][bond0];")
+            code.append(f"{indent}{self.data_type} prod = {self.layer_name}_out[first_site][p0][l_first][bond0];")
             
             # Middle sites (all with p=0)
             for s in range(1, group_size - 1):
@@ -367,19 +373,22 @@ class ContractNeighbors(Block):
 class ComputeNorm(Block):
     """Compute the norm squared of final MPS as score"""
     def __init__(self, num_sites: int, layer_name: str, layer_idx: int, 
-                 is_truncated: bool = False, **kwargs):
+                 is_truncated: bool = False,
+                 data_type: str = "data_t",
+                 **kwargs):
         self.num_sites = num_sites
         self.layer_name = layer_name
         self.layer_idx = layer_idx
         self.is_truncated = is_truncated
+        self.data_type = data_type
     
     def generate_declarations(self) -> str:
         if self.layer_idx == -1:
-            return """    // Initial norm computation
-    data_t initial_norm_squared = 0.0;"""
+            return f"""    // Initial norm computation
+    {self.data_type} initial_norm_squared = 0.0;"""
         else:
-            return """    // Final norm computation
-    data_t norm_squared = 0.0;"""
+            return f"""    // Final norm computation
+    {self.data_type} norm_squared = 0.0;"""
     
     def generate_compute(self) -> str:
         # Special case: input MPS with trivial bonds (bond_dim=1)
@@ -416,7 +425,7 @@ class ComputeNorm(Block):
         code.append("")
         
         # Extract tensor values and compute product
-        code.append(f"{indent}data_t product = 1.0;")
+        code.append(f"{indent}{self.data_type} product = 1.0;")
         for i in range(self.num_sites):
             left_bond = f"bond{i-1}{i}" if i > 0 else "0"
             right_bond = f"bond{i}{i+1}" if i < self.num_sites - 1 else "0"
@@ -434,16 +443,18 @@ class ComputeNorm(Block):
 
     def _generate_input_norm_compute(self) -> str:
         """Compute norm for input MPS with trivial bonds (bond_dim=1)"""
-        code = [f"""    // Compute norm squared of input MPS (trivial bonds)
+        code = [f"""
+    // Compute norm squared of input MPS (trivial bonds)
     initial_norm_squared = 0.0;
     
     for (int site = 0; site < {self.num_sites}; site++) {{
         for (int p = 0; p < INPUT_FEATURES; p++) {{
             #pragma HLS PIPELINE II=1
-            data_t val = {self.layer_name}[site][p];
+            {self.data_type} val = {self.layer_name}[site][p];
             initial_norm_squared += val * val;
         }}
-    }}"""]
+    }}
+"""]
         
         return "\n".join(code)
 
@@ -572,7 +583,8 @@ class HLSGenerator:
                 layer.phys_in,
                 layer.phys_out,
                 input_bond=current_bond,
-                layer_idx=i
+                layer_idx=i,
+                data_type=f"layer{i+1}_t"
             )
             pipeline.append(smpo_block)
             
@@ -589,7 +601,8 @@ class HLSGenerator:
                 layer.output_sites,
                 layer.phys_out,
                 composite_bond,  # bond dimensions after SMPO
-                composite_bond
+                composite_bond,
+                data_type=f"layer{i+1}_t"
             )
             pipeline.append(contract_block)
 
@@ -689,12 +702,12 @@ class HLSGenerator:
         return header
     
     def _generate_includes(self) -> str:
-        includes = """#include <hls_stream.h>
+        includes = f"""#include <hls_stream.h>
 #include <ap_fixed.h>
 #include <hls_math.h>
 #include <cmath>
 
-typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
+typedef {self.model.data_type} data_t;
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -763,7 +776,6 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         
         # Output parameters
         if self.model.output_config.compute_norm:
-            sig.append(f"    data_t output[OUTPUT_DIM],")
             sig.append(f"    data_t* norm_ratio,  // Output: norm squared ratio")
             sig.append(f"    bool* trigger_decision  // Output: trigger pass/fail")
         else:
@@ -771,8 +783,7 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
             
         sig.append(""") {
 #pragma HLS INTERFACE s_axilite port=return
-#pragma HLS INTERFACE m_axi port=input offset=slave
-#pragma HLS INTERFACE m_axi port=output offset=slave""")
+#pragma HLS INTERFACE m_axi port=input offset=slave""")
         
         if self.model.output_config.compute_norm:
             sig.append("#pragma HLS INTERFACE s_axilite port=norm_ratio")
@@ -785,39 +796,15 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         return "\n".join(sig)
     
     def _generate_footer(self) -> str:
-        num_layers = len(self.model.layers)
-        last_layer = self.model.layers[-1]
-        
-        # Determine final bond dimension (after truncation if applicable)
-        if last_layer.truncation.enabled:
-            final_bond = f"LAYER{num_layers}_TRUNCATED_BOND"
-        else:
-            final_bond = f"LAYER{num_layers}_COMPOSITE_BOND"
-        
-        footer = ["""
-    // ===== COPY FINAL OUTPUT =====
-    // For now, just copy first physical component of each output site
-    for (int i = 0; i < OUTPUT_DIM; i++) {
-        // Sum over all bonds (full contraction)
-        data_t sum = 0;"""]
-        
-        footer.append(f"""        for (int l = 0; l < {final_bond}; l++) {{
-            for (int r = 0; r < {final_bond}; r++) {{
-                sum += layer{num_layers}_contracted[i][0][l][r];  // Using p=0 for now
-            }}
-        }}
-        output[i] = sum;
-    }}""")
-        
+        footer = []
+
         if self.model.output_config.compute_norm:
             footer.append("""
+    // ===== WRITE OUTPUT =====
     // Write norm score
     *norm_ratio = norm_ratio_value;
-    *trigger_decision = trigger_pass;""")
-        
-        footer.append("""
-} // end tn_model""")
-        
+    *trigger_decision = trigger_pass;
+}""")
         return "\n".join(footer)
     
     def _get_architecture_string(self) -> str:
