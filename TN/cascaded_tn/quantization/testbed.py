@@ -65,7 +65,61 @@ class QuantizationTestbed:
         
         # Print statistics
         print_quantization_stats(self.stats, self.config)
+
+    def quantize_mixed(self, layer_configs: List[Tuple[int, int]], signed: bool = True):
+        """
+        Quantize each layer to different precision.
         
+        Args:
+            layer_configs: List of (n_word, n_frac) tuples, one per layer
+                          e.g., [(18, 12), (16, 10), (12, 8)]
+            signed: Use signed representation
+        """
+        n_layers = len(self.model_float.cascade.operators)
+        
+        if len(layer_configs) != n_layers:
+            raise ValueError(
+                f"Must provide config for each layer. Model has {n_layers} layers, "
+                f"got {len(layer_configs)} configs."
+            )
+        
+        print(f"\n[MIXED QUANTIZATION] Quantizing {n_layers} layers with different precisions")
+        
+        # Store configs and quantized weights per layer
+        self.mixed_configs = []
+        self.mixed_quantized_weights = []
+        self.mixed_stats = []
+        
+        # Get tensor indices for each layer
+        tensor_idx = 0
+        for layer_idx, (n_word, n_frac) in enumerate(layer_configs):
+            # Create config for this layer
+            config = FixedPointConfig(n_word=n_word, n_frac=n_frac, signed=signed)
+            self.mixed_configs.append(config)
+            
+            # Get this layer's tensors
+            op = self.model_float.cascade.operators[layer_idx]
+            if hasattr(op, 'implementation') and hasattr(op.implementation, 'tensors'):
+                n_tensors_in_layer = len(op.implementation.tensors)
+            else:
+                n_tensors_in_layer = op.config.input_dim  # Fallback estimate
+            
+            # Get float weights for this layer
+            layer_weight_arrays = self.model_float.arrays[tensor_idx:tensor_idx + n_tensors_in_layer]
+            layer_weight_arrays = [np.array(jax.device_get(arr)) for arr in layer_weight_arrays]
+            
+            # Quantize this layer
+            quantized, stats = quantize_model_weights(layer_weight_arrays, config)
+            self.mixed_quantized_weights.append(quantized)
+            self.mixed_stats.append(stats)
+            
+            print(f"  Layer {layer_idx}: {config} - {stats['total_params']} params, "
+                  f"{stats['clipped_params']} clipped")
+            
+            tensor_idx += n_tensors_in_layer
+        
+        print(f"✅ Mixed quantization complete")
+
     def evaluate_float(self, dataloader, metric_fn, verbose: bool = True) -> np.ndarray:
         """
         Evaluate model in float32 precision.
@@ -127,7 +181,48 @@ class QuantizationTestbed:
             all_metrics.append(metrics)
         
         return np.concatenate(all_metrics)
-    
+
+    def evaluate_mixed(self, dataloader, metric_fn, verbose: bool = True) -> np.ndarray:
+        """
+        Evaluate model with mixed-precision layers.
+        
+        Args:
+            dataloader: Data loader
+            metric_fn: Function that computes metric
+            verbose: Show progress bar
+            
+        Returns:
+            Array of metric values for each sample
+        """
+        if not hasattr(self, 'mixed_quantized_weights'):
+            raise ValueError("Model not quantized with mixed precision! Call quantize_mixed() first.")
+        
+        all_metrics = []
+        
+        # Prepare quantized weights - flatten and convert to float
+        all_quantized_weights = []
+        for layer_quantized in self.mixed_quantized_weights:
+            for w in layer_quantized:
+                all_quantized_weights.append(w().astype(np.float32))
+        all_quantized_weights = [jnp.array(w) for w in all_quantized_weights]
+        
+        # Create config string for progress bar
+        config_str = " → ".join([str(c) for c in self.mixed_configs])
+        iterator = tqdm(dataloader, desc=f"Evaluating (mixed: {config_str})") if verbose else dataloader
+        
+        for batch in iterator:
+            # Quantize input data to first layer's precision
+            batch_np = np.array(batch, dtype=np.float32)
+            batch_quantized = quantize_array(batch_np, self.mixed_configs[0])
+            batch_float = jnp.array(batch_quantized().astype(np.float32))
+            
+            # Evaluate with mixed-precision quantized weights
+            metrics = metric_fn(batch_float, None, *all_quantized_weights)
+            metrics = jax.device_get(metrics)
+            all_metrics.append(metrics)
+        
+        return np.concatenate(all_metrics)
+
     def compare_performance(self,
                            background_loader,
                            signal_loaders: Dict[str, any],
