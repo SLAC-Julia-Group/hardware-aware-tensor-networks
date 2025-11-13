@@ -4,7 +4,7 @@ data_type: float
 input:
   sites: 19
   features: 3
-  embedding: kinematic
+  embedding: kinematicNorm
 hardware:
   pipeline_ii: 1
   array_partition_dims:
@@ -17,9 +17,12 @@ layers:
   output_sites: 7
   phys_in: 3
   phys_out: 2
-  bond_dim: 7
+  bond_dim: 8
   weight_name: weights1
   optimize_non_output: true
+  enable_relu: true
+  precision_word: 18
+  precision_frac: 12
   truncation:
     enabled: false
 - name: layer2
@@ -27,14 +30,16 @@ layers:
   output_sites: 3
   phys_in: 2
   phys_out: 3
-  bond_dim: 2
+  bond_dim: 3
   weight_name: weights2
   optimize_non_output: true
+  precision_word: 16
+  precision_frac: 10
   truncation:
     enabled: false
-    max_bond: 16
-    method: slice
 output:
   format: direct
   compute_norm: true
   final_layer: layer2
+  norm_window_lower: 0.0
+  norm_window_upper: 100.0

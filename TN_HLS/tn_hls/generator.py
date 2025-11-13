@@ -34,13 +34,21 @@ class DataEmbedding(Block):
         self.embedding_type = embedding_type
     
     def generate_declarations(self) -> str:
-        return f"""    // Raw input and embedded data
+        if self.embedding_type in ["kinematic", "kinematicNorm"]:
+            return f"""    // Raw input features (57 particle kinematics)
+    data_t raw_input[57];
+    data_t encoded_input[INPUT_SITES][INPUT_FEATURES];
+    #pragma HLS ARRAY_PARTITION variable=encoded_input complete dim=2"""
+        else:
+            return f"""    // Raw input and embedded data
     data_t raw_input[INPUT_SITES];
     data_t encoded_input[INPUT_SITES][INPUT_FEATURES];
     #pragma HLS ARRAY_PARTITION variable=encoded_input complete dim=2"""
     
     def generate_compute(self) -> str:
-        if self.embedding_type == "trigonometric":
+        if self.embedding_type == "kinematic" or self.embedding_type == "kinematicNorm":
+            return self._generate_kinematic_embedding()
+        elif self.embedding_type == "trigonometric":
             return f"""    // Copy input data
     for (int i = 0; i < INPUT_SITES; i++) {{
         raw_input[i] = input[i];
@@ -71,6 +79,77 @@ class DataEmbedding(Block):
     def get_output_info(self):
         return {"sites": self.input_sites, "features": self.features}
 
+    def _generate_kinematic_embedding(self) -> str:
+        """Generate kinematic embedding: 57→19 particles with optional normalization"""
+        code = ["""    // Copy 57 raw input features
+    for (int i = 0; i < 57; i++) {
+        #pragma HLS PIPELINE II=1
+        raw_input[i] = input[i];
+    }
+    
+    // Reshape to 19 particles × 3 features (pt, eta, phi)
+    int raw_idx = 0;
+    
+    // Particle 0: MET (eta=0 hardcoded)
+    encoded_input[0][0] = raw_input[raw_idx++];  // pt
+    encoded_input[0][1] = raw_input[raw_idx++];  // eta (dummy)
+    encoded_input[0][2] = raw_input[raw_idx++];  // phi
+    
+    // Particles 1-4: Electrons
+    for (int i = 1; i <= 4; i++) {
+        #pragma HLS UNROLL
+        encoded_input[i][0] = raw_input[raw_idx++];  // pt
+        encoded_input[i][1] = raw_input[raw_idx++];  // eta
+        encoded_input[i][2] = raw_input[raw_idx++];  // phi
+    }
+    
+    // Particles 5-8: Muons
+    for (int i = 5; i <= 8; i++) {
+        #pragma HLS UNROLL
+        encoded_input[i][0] = raw_input[raw_idx++];  // pt
+        encoded_input[i][1] = raw_input[raw_idx++];  // eta
+        encoded_input[i][2] = raw_input[raw_idx++];  // phi
+    }
+    
+    // Particles 9-18: Jets
+    for (int i = 9; i <= 18; i++) {
+        #pragma HLS UNROLL
+        encoded_input[i][0] = raw_input[raw_idx++];  // pt
+        encoded_input[i][1] = raw_input[raw_idx++];  // eta
+        encoded_input[i][2] = raw_input[raw_idx++];  // phi
+    }"""]
+        
+        # Add normalization if requested
+        if self.embedding_type == "kinematicNorm":
+            code.append("""
+    // Apply physics-aware normalization
+    // Particle 0: MET
+    encoded_input[0][0] = encoded_input[0][0] / 1200.0;
+    encoded_input[0][1] = (encoded_input[0][1] + 5.0) / 10.0;
+    encoded_input[0][2] = (encoded_input[0][2] + M_PI) / (2.0 * M_PI);
+    
+    // Particles 1-4: Electrons
+    for (int i = 1; i <= 4; i++) {
+        encoded_input[i][0] = encoded_input[i][0] / 1200.0;
+        encoded_input[i][1] = (encoded_input[i][1] + 5.0) / 10.0;
+        encoded_input[i][2] = (encoded_input[i][2] + M_PI) / (2.0 * M_PI);
+    }
+    
+    // Particles 5-8: Muons
+    for (int i = 5; i <= 8; i++) {
+        encoded_input[i][0] = encoded_input[i][0] / 800.0;
+        encoded_input[i][1] = (encoded_input[i][1] + 5.0) / 10.0;
+        encoded_input[i][2] = (encoded_input[i][2] + M_PI) / (2.0 * M_PI);
+    }
+    
+    // Particles 9-18: Jets
+    for (int i = 9; i <= 18; i++) {
+        encoded_input[i][0] = encoded_input[i][0] / 600.0;
+        encoded_input[i][1] = (encoded_input[i][1] + 5.0) / 10.0;
+        encoded_input[i][2] = (encoded_input[i][2] + M_PI) / (2.0 * M_PI);
+    }""")
+        
+        return "\n".join(code)
 
 class ApplySMPO(Block):
     """Apply SMPO to MPS - vertical contraction only"""
@@ -295,23 +374,19 @@ class ComputeNorm(Block):
         self.is_truncated = is_truncated
     
     def generate_declarations(self) -> str:
-        return """    // MPS norm computation
+        if self.layer_idx == -1:
+            return """    // Initial norm computation
+    data_t initial_norm_squared = 0.0;"""
+        else:
+            return """    // Final norm computation
     data_t norm_squared = 0.0;"""
     
     def generate_compute(self) -> str:
-        if self.num_sites != 3:
-            return f"    // TODO: Norm computation for {self.num_sites} sites not implemented yet"
-        
+        # Special case: input MPS with trivial bonds (bond_dim=1)
+        if self.layer_idx == -1:
+            return self._generate_input_norm_compute()
+
         layer_num = self.layer_idx + 1
-        
-        # Generate norm computation for 3-site MPS
-        code = [f"""    // Compute norm squared of final {self.num_sites}-site MPS"""]
-        
-        # Generate physical index loops  
-        phys_loops = []
-        for i in range(self.num_sites):
-            indent = "    " + "    " * i
-            phys_loops.append(f"{indent}for (int p{i} = 0; p{i} < LAYER{layer_num}_PHYS_OUT; p{i}++) {{")
         
         # Determine bond constant name
         if self.is_truncated:
@@ -319,45 +394,119 @@ class ComputeNorm(Block):
         else:
             bond_const = f"LAYER{layer_num}_COMPOSITE_BOND"
         
-        # Generate bond loops
-        bond_loops = []
-        for b in range(self.num_sites - 1):
-            indent = "    " + "    " * (self.num_sites + b)
-            bond_loops.append(f"{indent}for (int bond{b}{b+1} = 0; bond{b}{b+1} < {bond_const}; bond{b}{b+1}++) {{")
+        norm_var = "initial_norm_squared" if self.layer_idx == -1 else "norm_squared"
         
-        # Add all opening braces
-        code.extend(phys_loops)
-        code.extend(bond_loops)
+        code = [f"""    // Compute norm squared of {self.num_sites}-site MPS
+    {norm_var} = 0.0;
+    """]
+        
+        # Generate nested loops for physical indices
+        for i in range(self.num_sites):
+            indent = "    " * (i + 1)
+            code.append(f"{indent}for (int p{i} = 0; p{i} < LAYER{layer_num}_PHYS_OUT; p{i}++) {{")
+        
+        # Generate nested loops for bond indices (num_sites - 1 bonds)
+        for b in range(self.num_sites - 1):
+            indent = "    " * (self.num_sites + b + 1)
+            code.append(f"{indent}for (int bond{b}{b+1} = 0; bond{b}{b+1} < {bond_const}; bond{b}{b+1}++) {{")
         
         # Add pipeline pragma
-        indent = "    " + "    " * (2 * self.num_sites - 1)
+        indent = "    " * (2 * self.num_sites)
         code.append(f"{indent}#pragma HLS PIPELINE II=1")
         code.append("")
         
-        # Extract tensor values
-        code.append(f"{indent}// Extract tensor values")
-        code.append(f"{indent}data_t a0 = {self.layer_name}[0][p0][0][bond01];  // Left bond = 0 (dummy)")
-        code.append(f"{indent}data_t a1 = {self.layer_name}[1][p1][bond01][bond12];")
-        code.append(f"{indent}data_t a2 = {self.layer_name}[2][p2][bond12][0];  // Right bond = 0 (dummy)")
-        code.append("")
+        # Extract tensor values and compute product
+        code.append(f"{indent}data_t product = 1.0;")
+        for i in range(self.num_sites):
+            left_bond = f"bond{i-1}{i}" if i > 0 else "0"
+            right_bond = f"bond{i}{i+1}" if i < self.num_sites - 1 else "0"
+            code.append(f"{indent}product *= {self.layer_name}[{i}][p{i}][{left_bond}][{right_bond}];")
         
-        # Accumulate norm
-        code.append(f"{indent}// Accumulate squared values")
-        code.append(f"{indent}norm_squared += a0 * a0 * a1 * a1 * a2 * a2;")
+        # Accumulate squared product
+        code.append(f"{indent}{norm_var} += product * product;")
         
         # Close all loops
         for i in range(2 * self.num_sites - 1):
-            indent = "    " + "    " * (2 * self.num_sites - 2 - i)
+            indent = "    " * (2 * self.num_sites - 1 - i)
             code.append(f"{indent}}}")
         
-        code.append("")
-        code.append("    // norm_squared is the score")
+        return "\n".join(code)
+
+    def _generate_input_norm_compute(self) -> str:
+        """Compute norm for input MPS with trivial bonds (bond_dim=1)"""
+        code = [f"""    // Compute norm squared of input MPS (trivial bonds)
+    initial_norm_squared = 0.0;
+    
+    for (int site = 0; site < {self.num_sites}; site++) {{
+        for (int p = 0; p < INPUT_FEATURES; p++) {{
+            #pragma HLS PIPELINE II=1
+            data_t val = {self.layer_name}[site][p];
+            initial_norm_squared += val * val;
+        }}
+    }}"""]
+        
+        return "\n".join(code)
+
+    def get_output_info(self):
+        return {"has_norm_score": True}
+
+class ApplyReLU(Block):
+    """Apply ReLU activation element-wise to MPS tensors"""
+    
+    def __init__(self, layer_name: str, layer_idx: int, num_sites: int, 
+                 phys_dim: int, bond_dim: str):
+        self.layer_name = layer_name
+        self.layer_idx = layer_idx
+        self.num_sites = num_sites
+        self.phys_dim = phys_dim
+        self.bond_dim = bond_dim
+    
+    def generate_declarations(self) -> str:
+        return f"    // ReLU applied to {self.layer_name}"
+    
+    def generate_compute(self) -> str:
+        layer_num = self.layer_idx + 1
+        
+        code = [f"""    // Apply ReLU activation: max(0, x) element-wise
+    for (int site = 0; site < {self.num_sites}; site++) {{
+        for (int p = 0; p < LAYER{layer_num}_PHYS_OUT; p++) {{
+            for (int l = 0; l < {self.bond_dim}; l++) {{
+                for (int r = 0; r < {self.bond_dim}; r++) {{
+                    #pragma HLS PIPELINE II=1
+                    if ({self.layer_name}[site][p][l][r] < 0) {{
+                        {self.layer_name}[site][p][l][r] = 0;
+                    }}
+                }}
+            }}
+        }}
+    }}"""]
         
         return "\n".join(code)
     
     def get_output_info(self):
-        return {"has_norm_score": True}
+        return {"has_relu": True}
 
+class TriggerDecision(Block):
+    """Make trigger decision based on norm ratio window"""
+    
+    def __init__(self, lower_bound: float, upper_bound: float):
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
+    
+    def generate_declarations(self) -> str:
+        return """    // Norm ratio and trigger decision
+    data_t norm_ratio_value;
+    bool trigger_pass;"""
+    
+    def generate_compute(self) -> str:
+        return f"""    // Compute norm ratio
+    norm_ratio_value = norm_squared / initial_norm_squared;
+    
+    // Trigger decision: pass if norm_ratio in [{self.lower_bound}, {self.upper_bound}]
+    trigger_pass = (norm_ratio_value < {self.lower_bound}) || (norm_ratio_value > {self.upper_bound});"""
+    
+    def get_output_info(self):
+        return {"has_trigger": True}
 
 class TruncateBonds(Block):
     """Optional bond truncation"""
@@ -401,6 +550,14 @@ class HLSGenerator:
             self.model.embedding_type
         ))
         
+        # Compute initial norm squared (before cascade)
+        pipeline.append(ComputeNorm(
+            num_sites=self.model.input_sites,
+            layer_name="encoded_input",
+            layer_idx=-1,  # Special index for input
+            is_truncated=False
+        ))
+
         # Track bond dimensions through layers
         current_bond = 1  # Initial MPS has bond dimension 1
         
@@ -435,7 +592,18 @@ class HLSGenerator:
                 composite_bond
             )
             pipeline.append(contract_block)
-            
+
+            # Apply ReLU if enabled for this layer
+            if layer.enable_relu:
+                bond_str = f"LAYER{i+1}_COMPOSITE_BOND"
+                pipeline.append(ApplyReLU(
+                    f"{layer.name}_contracted",
+                    i,
+                    layer.output_sites,
+                    layer.phys_out,
+                    bond_str
+                ))
+
             # Optional truncation
             if layer.truncation.enabled:
                 pipeline.append(TruncateBonds(
@@ -461,7 +629,13 @@ class HLSGenerator:
                 layer_idx=last_layer_idx,
                 is_truncated=last_layer.truncation.enabled
             ))
-        
+            
+            # Make trigger decision based on norm window
+            pipeline.append(TriggerDecision(
+                lower_bound=self.model.output_config.norm_window_lower,
+                upper_bound=self.model.output_config.norm_window_upper
+            ))
+
         return pipeline
     
     def generate(self) -> str:
@@ -538,6 +712,8 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         
         for i, layer in enumerate(self.model.layers):
             layer_num = i + 1
+            int_bits = layer.precision_word - layer.precision_frac
+            constants.append(f"typedef ap_fixed<{layer.precision_word},{int_bits}> layer{layer_num}_t;  // Q{int_bits}.{layer.precision_frac}")
             composite_bond = current_bond * layer.bond_dim
             
             constants.append(f"""
@@ -564,8 +740,13 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         return "\n".join(constants)
     
     def _generate_function_signature(self) -> str:
-        sig = ["""void tn_model(
-    data_t input[INPUT_SITES],"""]
+        sig = ["void tn_model("]
+        
+        # Determine input size based on embedding type
+        if self.model.embedding_type in ["kinematic", "kinematicNorm"]:
+            sig.append(f"    data_t input[57],  // Raw particle features")
+        else:
+            sig.append(f"    data_t input[INPUT_SITES],")
         
         # Add weight parameters for each layer
         for i, layer in enumerate(self.model.layers):
@@ -583,7 +764,8 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         # Output parameters
         if self.model.output_config.compute_norm:
             sig.append(f"    data_t output[OUTPUT_DIM],")
-            sig.append(f"    data_t* norm_score  // Output: norm squared of final MPS")
+            sig.append(f"    data_t* norm_ratio,  // Output: norm squared ratio")
+            sig.append(f"    bool* trigger_decision  // Output: trigger pass/fail")
         else:
             sig.append(f"    data_t output[OUTPUT_DIM]")
             
@@ -593,7 +775,8 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
 #pragma HLS INTERFACE m_axi port=output offset=slave""")
         
         if self.model.output_config.compute_norm:
-            sig.append("#pragma HLS INTERFACE s_axilite port=norm_score")
+            sig.append("#pragma HLS INTERFACE s_axilite port=norm_ratio")
+            sig.append("#pragma HLS INTERFACE s_axilite port=trigger_decision")
         
         # Add interface pragmas for weights
         for i in range(len(self.model.layers)):
@@ -629,7 +812,8 @@ typedef float data_t;  // Or ap_fixed<32,16> for fixed-point
         if self.model.output_config.compute_norm:
             footer.append("""
     // Write norm score
-    *norm_score = norm_squared;""")
+    *norm_ratio = norm_ratio_value;
+    *trigger_decision = trigger_pass;""")
         
         footer.append("""
 } // end tn_model""")

@@ -39,6 +39,9 @@ class SMPOLayer:
     weight_name: str
     truncation: BondTruncation = field(default_factory=BondTruncation)
     optimize_non_output: bool = True
+    enable_relu: bool = False
+    precision_word: int = 18  # Total bit width (e.g., 18, 16, 14)
+    precision_frac: int = 12  # Fractional bits (e.g., 12, 10, 8)
     # Spacing is calculated, not stored
     _spacing: Optional[int] = None
     
@@ -122,6 +125,8 @@ class OutputConfig:
     format: str = "direct"  # "direct" or "streaming"
     compute_norm: bool = True  # Whether to compute MPS norm as score
     final_layer: Optional[str] = None
+    norm_window_lower: float = 0.0    # Lower bound for normal norm^2 ratio
+    norm_window_upper: float = 100.0  # Upper bound for normal norm^2 ratio
     
     
 @dataclass
@@ -218,7 +223,9 @@ def load_model_config(config_file: str) -> ModelConfig:
         output_config = OutputConfig(
             format=out_data.get('format', 'direct'),
             compute_norm=out_data.get('compute_norm', True),
-            final_layer=out_data.get('final_layer', None)
+            final_layer=out_data.get('final_layer', None),
+            norm_window_lower=out_data.get('norm_window_lower', 0.0),
+            norm_window_upper=out_data.get('norm_window_upper', 100.0)
         )
     
     # Parse layers
@@ -243,7 +250,10 @@ def load_model_config(config_file: str) -> ModelConfig:
             bond_dim=layer_data['bond_dim'],
             weight_name=layer_data['weight_name'],
             truncation=truncation,
-            optimize_non_output=layer_data.get('optimize_non_output', True)
+            optimize_non_output=layer_data.get('optimize_non_output', True),
+            enable_relu=layer_data.get('enable_relu', False),
+            precision_word=layer_data.get('precision_word', 18),
+            precision_frac=layer_data.get('precision_frac', 12)
         )
         layers.append(layer)
     
