@@ -103,19 +103,23 @@ def write_dat_file(features, filename):
 
 def main():
     import argparse
-    
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--nEvents', type=int, default=5, help='Number of events to extract')
-    parser.add_argument('--inFile', type=str, 
+    parser.add_argument('--nEvents', type=int, default=5, help="Number of events to extract")
+    parser.add_argument('--skipEvents', type=int, default=0, help="Skip the first N events")
+    parser.add_argument('--inFile', '-i', type=str, 
                        default="/lus/eagle/projects/ATLAS_workflow_ALCF/sagar/QiML/background_for_training.h5")
-    parser.add_argument('--outFile', type=str,
+    parser.add_argument('--outFile', '-o', type=str,
                        default="background.dat")
     args = parser.parse_args()
-        
-    print(f"Extracting {args.nEvents} events...")
+
     with h5py.File(args.inFile, 'r') as f:
         data = f['Particles']
-        indices = list(range(args.nEvents))
+        finalEvent = args.skipEvents+args.nEvents
+        if args.nEvents==-1 or finalEvent > data.shape[0]:
+            finalEvent = data.shape[0]
+        print(f"Extracting {finalEvent-args.skipEvents} events...")
+        indices = list(range(args.skipEvents, finalEvent))
         features = extract_raw_features(data, indices, include_met_eta=True)
 
     write_dat_file(features, args.outFile)

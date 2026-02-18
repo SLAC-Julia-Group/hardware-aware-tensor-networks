@@ -58,6 +58,7 @@ class LayerConfig:
     output_dim: int
     bond_dim: int
     spacing: Optional[Union[int, List[int]]] = None  # Auto-calculated if None
+    output_inds: Optional[List[int]] = None  # Arbitrary output positions (overrides spacing)
     cyclic: bool = False
     phys_dim: Tuple[int, int] = (2, 2)
     add_identity: bool = False
@@ -75,6 +76,26 @@ class LayerConfig:
         if self.bond_dim < 2:
             raise ValueError(f"Bond dimension must be at least 2, got {self.bond_dim}")
 
+        # Validate output_inds if provided
+        if self.output_inds is not None:
+            if len(self.output_inds) != self.output_dim:
+                raise ValueError(
+                    f"output_inds length ({len(self.output_inds)}) must match "
+                    f"output_dim ({self.output_dim})"
+                )
+            if self.output_inds != sorted(self.output_inds):
+                raise ValueError(f"output_inds must be sorted, got {self.output_inds}")
+            if len(self.output_inds) != len(set(self.output_inds)):
+                raise ValueError(f"output_inds must be unique, got {self.output_inds}")
+            if any(idx < 0 or idx >= self.input_dim for idx in self.output_inds):
+                raise ValueError(
+                    f"output_inds must be in range [0, {self.input_dim-1}], "
+                    f"got {self.output_inds}"
+                )
+            # output_inds takes precedence over spacing
+            if self.spacing is not None:
+                print(f"[INFO] output_inds provided, ignoring spacing={self.spacing}")
+                self.spacing = None
 
 class CascadableOperator(ABC):
     """

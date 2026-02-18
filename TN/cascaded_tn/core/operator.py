@@ -106,35 +106,41 @@ class CascadableSMPO(CascadableOperator):
                 f"SMPO is designed for compression only. Use ExpansionSMPO (coming soon) instead."
             )
         
-        # Calculate spacing if not provided
-        if config.spacing is None:
+        # Determine output specification method
+        smpo_kwargs = {}
+        
+        if config.output_inds is not None:
+            # Use explicit output positions (takes precedence)
+            smpo_kwargs['output_inds'] = config.output_inds
             if self.debug:
-                print(f"[CREATE] Auto-calculating spacing for {config.input_dim}→{config.output_dim}")
-            
-            # Import here to avoid circular dependency
-            from ..builders.dimension_calculator import DimensionCalculator
-            calc = DimensionCalculator(debug=False)
-            spacing_result = calc.calculate_optimal_spacing(
-                config.input_dim, config.output_dim, config.cyclic
-            )
-            spacing = spacing_result.spacing
-            
-            if self.debug:
-                print(f"[CREATE] Calculated spacing: {spacing}")
+                print(f"[CREATE] Using explicit output_inds: {config.output_inds}")
         else:
-            spacing = config.spacing
+            # Calculate or use provided spacing
+            if config.spacing is None:
+                if self.debug:
+                    print(f"[CREATE] Auto-calculating spacing for {config.input_dim}→{config.output_dim}")
+                
+                from ..builders.dimension_calculator import DimensionCalculator
+                calc = DimensionCalculator(debug=False)
+                spacing_result = calc.calculate_optimal_spacing(
+                    config.input_dim, config.output_dim, config.cyclic
+                )
+                spacing = spacing_result.spacing
+                
+                if self.debug:
+                    print(f"[CREATE] Calculated spacing: {spacing}")
+            else:
+                spacing = config.spacing
+            
+            # Handle non-uniform spacing
+            if isinstance(spacing, list):
+                smpo_kwargs['spacings'] = spacing
+            else:
+                smpo_kwargs['spacing'] = spacing
         
         if self.debug:
             print(f"[CREATE] Building SMPO: L={config.input_dim}, "
-                  f"spacing={spacing}, cyclic={config.cyclic}")
-        
-        # Handle non-uniform spacing
-        spacing_kwarg = {}
-        if isinstance(spacing, list):
-            # tn4ml might expect 'spacings' for non-uniform
-            spacing_kwarg['spacings'] = spacing
-        else:
-            spacing_kwarg['spacing'] = spacing
+                f"cyclic={config.cyclic}, smpo_kwargs={smpo_kwargs}")
         
         smpo = SMPO_initialize(
             L=config.input_dim,
@@ -147,7 +153,7 @@ class CascadableSMPO(CascadableOperator):
             add_identity=config.add_identity,
             boundary='pbc' if config.cyclic else 'obc',
             shape_method='even' if config.cyclic else kwargs.get('shape_method', 'even'),
-            **spacing_kwarg,
+            **smpo_kwargs,
             **kwargs
         )
         
@@ -155,7 +161,7 @@ class CascadableSMPO(CascadableOperator):
         actual_outputs = len(list(smpo.lower_inds))
         if actual_outputs != config.output_dim:
             print(f"[WARNING] SMPO created with {actual_outputs} outputs, "
-                  f"expected {config.output_dim}")
+                f"expected {config.output_dim}")
         
         return smpo
     

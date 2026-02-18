@@ -2,7 +2,7 @@ import h5py
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-from typing import NamedTuple, Tuple, Optional
+from typing import NamedTuple, Tuple, Optional, Union
 from utils.dataset import var_dict, get_norm_dict
 import os
 
@@ -63,7 +63,7 @@ class RandomBatchSampler(Sampler):
 
 
 class HDF5Dataset(Dataset):
-    def __init__(self, file_path, key="Particles", norm=False, skip_MET_eta=True, cartesian=False):
+    def __init__(self, file_path, key="Particles", norm=False, skip_MET_eta=True, cartesian=False, particle_ordering: Optional[np.ndarray] = None):
         self.file_path = file_path       
         self.file = h5py.File(self.file_path, 'r')
 
@@ -76,6 +76,34 @@ class HDF5Dataset(Dataset):
         self.skip_MET_eta = skip_MET_eta
         self.cartesian = cartesian
         self.n_features = 56 if skip_MET_eta else 57
+
+        self.particle_ordering = particle_ordering
+        self.feature_ordering = None
+        if self.particle_ordering is not None:
+            self.feature_ordering = self._compute_feature_ordering(particle_ordering)
+
+    def _compute_feature_ordering(self, particle_ordering: np.ndarray) -> np.ndarray:
+        """Convert particle ordering to feature ordering."""
+        feature_ordering = []
+        
+        if self.skip_MET_eta:
+            # MET has 2 features, others have 3
+            def get_particle_features(orig_idx):
+                if orig_idx == 0:  # MET
+                    return [0, 1]
+                else:
+                    start = 2 + (orig_idx - 1) * 3
+                    return [start, start + 1, start + 2]
+        else:
+            # All particles have 3 features
+            def get_particle_features(orig_idx):
+                start = orig_idx * 3
+                return [start, start + 1, start + 2]
+        
+        for orig_idx in particle_ordering:
+            feature_ordering.extend(get_particle_features(orig_idx))
+        
+        return np.array(feature_ordering, dtype=np.int64)
 
     def __len__(self):
         # n_jets dimension
@@ -245,6 +273,10 @@ class HDF5Dataset(Dataset):
                     features[:, idx+2] = np.where(mask, features[:, idx+2] / 200, NULL_UNIT)  # pz
                     idx += 3
 
+        # Apply particle reordering if specified
+        if self.feature_ordering is not None:
+            features = features[:, self.feature_ordering]
+
         return features
 
     def _get_ordered_feature_names(self):
@@ -302,6 +334,7 @@ class SplitHDF5Dataset(Dataset):
         self.skip_MET_eta = base_dataset.skip_MET_eta
         self.cartesian = base_dataset.cartesian
         self.stats = base_dataset.stats
+        self.particle_ordering = base_dataset.particle_ordering
         
     def __len__(self):
         """Return the length of this split."""
@@ -357,7 +390,8 @@ def create_dataset_splits(
     skip_MET_eta: bool = True,
     cartesian: bool = False,
     seed: int = 42,
-    shuffle_before_split: bool = False
+    shuffle_before_split: bool = False,
+    particle_ordering: Optional[np.ndarray] = None
 ) -> Tuple[SplitHDF5Dataset, SplitHDF5Dataset, SplitHDF5Dataset]:
     """
     Create train, validation, and test dataset splits from a single HDF5 file.
@@ -391,7 +425,7 @@ def create_dataset_splits(
     train_ratio, val_ratio, test_ratio = split_ratios
     
     # Create base dataset
-    base_dataset = HDF5Dataset(file_path, key=key, norm=norm, skip_MET_eta=skip_MET_eta, cartesian=cartesian)
+    base_dataset = HDF5Dataset(file_path, key=key, norm=norm, skip_MET_eta=skip_MET_eta, cartesian=cartesian, particle_ordering=particle_ordering)
     
     # Get total number of samples
     n_samples = len(base_dataset)
@@ -448,7 +482,8 @@ def create_split_dataloaders(
     seed: int = 42,
     shuffle_before_split: bool = False,
     val_batch_size: Optional[int] = None,
-    test_batch_size: Optional[int] = None
+    test_batch_size: Optional[int] = None,
+    particle_ordering: Optional[np.ndarray] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train, validation, and test dataloaders with automatic splitting.
@@ -483,6 +518,8 @@ def create_split_dataloaders(
         Batch size for validation (defaults to batch_size)
     test_batch_size : int or None
         Batch size for testing (defaults to batch_size)
+    particle_ordering : np.ndarray or None
+        Optional array specifying particle ordering
         
     Returns
     -------
@@ -512,7 +549,8 @@ def create_split_dataloaders(
         skip_MET_eta=skip_MET_eta,
         cartesian=cartesian,
         seed=seed,
-        shuffle_before_split=shuffle_before_split
+        shuffle_before_split=shuffle_before_split,
+        particle_ordering=particle_ordering
     )
     
     # Create dataloaders
@@ -553,8 +591,8 @@ def create_split_dataloaders(
     
     return train_loader, val_loader, test_loader
 
-def load_data(file_path, batch_size=64, shuffle=True, num_workers=0, drop_last=False, norm=False, skip_MET_eta=True, cartesian=False):
-    dataset = HDF5Dataset(file_path, norm=norm, skip_MET_eta=skip_MET_eta, cartesian=cartesian)
+def load_data(file_path, batch_size=64, shuffle=True, num_workers=0, drop_last=False, norm=False, skip_MET_eta=True, cartesian=False, particle_ordering: Optional[np.ndarray] = None):
+    dataset = HDF5Dataset(file_path, norm=norm, skip_MET_eta=skip_MET_eta, cartesian=cartesian, particle_ordering=particle_ordering)
     loader = DataLoader(dataset, 
                         batch_size=None, 
                         shuffle=False,  

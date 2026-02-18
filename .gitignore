@@ -4,3 +4,4 @@
 __pycache__/
 output/
 !models_to_share/**/*.png
+TN/data/

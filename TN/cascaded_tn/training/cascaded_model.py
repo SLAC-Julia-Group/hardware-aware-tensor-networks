@@ -262,12 +262,14 @@ class CascadedModel(Model):
         bond_dims = []
         phys_dims = [self.cascade.operators[0].config.phys_dim[0]]  # Input phys_dim
         enable_relu = []
+        output_inds_list = []
         
         for op in self.cascade.operators:
             layer_dims.append(op.config.output_dim)
             bond_dims.append(op.config.bond_dim)
             phys_dims.append(op.config.phys_dim[1])  # Output phys_dim
             enable_relu.append(op.config.enable_relu)
+            output_inds_list.append(op.config.output_inds)  # May be None
         
         # Check if symmetric (does encoder match decoder in reverse?)
         symmetric = self._check_if_symmetric(layer_dims)
@@ -279,9 +281,17 @@ class CascadedModel(Model):
             bond_dims = bond_dims[:mid-1]
             phys_dims = phys_dims[:mid]
             enable_relu = enable_relu[:mid-1]
+            output_inds_list = output_inds_list[:mid-1]
         
         # Find which layers have ReLU enabled (as indices)
         relu_indices = [i for i, enabled in enumerate(enable_relu) if enabled]
+        
+        # Determine output_positions format for storage
+        # If all are None, store None; otherwise store the list
+        if all(oi is None for oi in output_inds_list):
+            output_positions = None
+        else:
+            output_positions = output_inds_list
         
         config = {
             'layer_dims': layer_dims,
@@ -291,6 +301,7 @@ class CascadedModel(Model):
             'cyclic': self.cascade.operators[0].config.cyclic,
             'symmetric': symmetric,
             'add_identity': self.cascade.operators[0].config.add_identity,
+            'output_positions': output_positions,
         }
         
         return config
@@ -377,6 +388,7 @@ class CascadedModel(Model):
             key=jax.random.PRNGKey(42),  # Doesn't matter, we're loading weights
             initializer=jax.nn.initializers.zeros,  # Doesn't matter, we're loading weights
             add_identity=config.get('add_identity', False),
+            output_positions=config.get('output_positions', None),
         )
         
         # Create model
@@ -412,6 +424,7 @@ class CascadedModel(Model):
 def create_trainable_autoencoder(layer_dims: List[int],
                                cyclic: bool = False,
                                enable_relu: Optional[Union[bool, List[int]]] = None,
+                               output_positions: Optional[Union[str, List[List[int]]]] = None,
                                loss_function=None,
                                optimizer=None,
                                learning_rate: float = 0.01,
@@ -424,17 +437,46 @@ def create_trainable_autoencoder(layer_dims: List[int],
     Creates the cascade and wraps it in a CascadedModel ready for training.
     
     Args:
-        layer_dims: Architecture dimensions
+        layer_dims: Architecture dimensions (e.g., [19, 7, 3] for encoder-only)
         cyclic: Whether to use cyclic boundaries
+        enable_relu: Enable ReLU between layers (bool or list of layer indices)
+        output_positions: Control output placement for each layer:
+            - None: Use automatic uniform spacing (default)
+            - 'center': Place outputs symmetrically centered in each layer
+            - List[List[int]]: Explicit output positions per layer
         loss_function: tn4ml loss function (e.g., LogQuadNorm)
         optimizer: Optimizer (e.g., optax.adam)
         learning_rate: Learning rate
         key: JAX random key
         phys_dims: List of physical dimensions [m0, m1, m2, ...] for sequential matching
-        **kwargs: Additional arguments for cascade creation
+        **kwargs: Additional arguments for cascade creation (e.g., bond_dims, symmetric)
         
     Returns:
         CascadedModel ready for training
+        
+    Examples:
+        # Basic usage with uniform spacing (default)
+        model = create_trainable_autoencoder(
+            layer_dims=[19, 7, 3],
+            bond_dims=[8, 4],
+            phys_dims=[3, 2, 3],
+        )
+        
+        # With centered output positions (symmetric placement)
+        model = create_trainable_autoencoder(
+            layer_dims=[19, 7, 3],
+            bond_dims=[8, 4],
+            phys_dims=[3, 2, 3],
+            output_positions='center',
+        )
+        
+        # With explicit output positions
+        model = create_trainable_autoencoder(
+            layer_dims=[19, 7, 3],
+            bond_dims=[8, 4],
+            phys_dims=[3, 2, 3],
+            output_positions=[[0, 9, 18], [0, 3, 6]],  # Explicit per-layer
+        )
     """
     from ..builders.autoencoder import AutoencoderBuilder
     
@@ -452,6 +494,7 @@ def create_trainable_autoencoder(layer_dims: List[int],
         cyclic=cyclic,
         key=key,
         enable_relu=enable_relu,
+        output_positions=output_positions,
         **kwargs  # Pass remaining kwargs
     )
     

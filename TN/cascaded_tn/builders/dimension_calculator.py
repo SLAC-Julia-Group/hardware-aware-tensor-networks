@@ -119,7 +119,7 @@ class DimensionCalculator:
             )
         
         if output_dim == 1:
-            # Extreme compression - only last tensor has output
+            # Extreme compression - only first tensor has output
             spacing = input_dim if not cyclic else input_dim
             return SpacingResult(
                 spacing=spacing,
@@ -153,7 +153,67 @@ class DimensionCalculator:
             return max(results, key=lambda r: r.efficiency)
         
         return uniform_result
-    
+
+    def calculate_centered_positions(self, input_dim: int, output_dim: int) -> List[int]:
+        """
+        Calculate symmetrically centered output positions.
+        
+        Distributes outputs evenly across [0, input_dim-1], always including
+        both endpoints (except for single output, which goes to center).
+        
+        Args:
+            input_dim: Number of input sites (L)
+            output_dim: Number of desired outputs (M)
+            
+        Returns:
+            List of output positions, sorted ascending
+            
+        Examples:
+            >>> calc.calculate_centered_positions(19, 1)
+            [9]
+            >>> calc.calculate_centered_positions(19, 2)
+            [0, 18]
+            >>> calc.calculate_centered_positions(19, 3)
+            [0, 9, 18]
+            >>> calc.calculate_centered_positions(19, 5)
+            [0, 4, 9, 14, 18]
+        """
+        if output_dim <= 0:
+            raise ValueError(f"output_dim must be positive, got {output_dim}")
+        
+        if output_dim > input_dim:
+            raise ValueError(
+                f"Cannot have more outputs ({output_dim}) than inputs ({input_dim})"
+            )
+        
+        if output_dim == input_dim:
+            # Every site has an output
+            return list(range(input_dim))
+        
+        if output_dim == 1:
+            # Single output at center
+            return [(input_dim - 1) // 2]
+        
+        # Distribute evenly from 0 to input_dim-1
+        positions = []
+        for i in range(output_dim):
+            # Linspace-style: i * (L-1) / (M-1)
+            pos = round(i * (input_dim - 1) / (output_dim - 1))
+            positions.append(pos)
+        
+        # Ensure uniqueness (rounding could theoretically cause duplicates for edge cases)
+        positions = sorted(set(positions))
+        
+        # Validate we got the right count (should always pass, but safety check)
+        if len(positions) != output_dim:
+            if self.debug:
+                print(f"[WARNING] Centered positions: expected {output_dim}, got {len(positions)}")
+                print(f"          Positions: {positions}")
+            # Fall back to uniform spacing if centering failed
+            return None
+        
+        return positions
+
     def _try_uniform_spacing(self, input_dim: int, output_dim: int, 
                            cyclic: bool) -> SpacingResult:
         """Try to find uniform spacing that gives exact output count."""
@@ -161,7 +221,7 @@ class DimensionCalculator:
         # We want: ceil(input_dim / spacing) = output_dim
         
         # Try different spacings
-        for spacing in range(1, input_dim + 1):
+        for spacing in range(input_dim, 0, -1):
             if cyclic:
                 # In cyclic case, we get exactly input_dim/spacing outputs
                 if input_dim % spacing == 0:

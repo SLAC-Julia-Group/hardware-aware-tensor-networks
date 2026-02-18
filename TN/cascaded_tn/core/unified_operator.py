@@ -85,28 +85,40 @@ class UnifiedCascadableOperator(CascadableOperator):
     
     def _create_compression_layer(self, config, initializer, key, **kwargs):
         """Create compression layer using SMPO."""
-        # Calculate spacing if not provided
-        if config.spacing is None:
-            from ..builders.dimension_calculator import DimensionCalculator
-            calc = DimensionCalculator(debug=False)
-            spacing_result = calc.calculate_optimal_spacing(
-                config.input_dim, config.output_dim, config.cyclic
-            )
-            spacing = spacing_result.spacing
-            
-            if self.debug:
-                print(f"[COMPRESSION] Auto-calculated spacing: {spacing}")
-        else:
-            spacing = config.spacing
-        
-        # Handle non-uniform spacing
-        if isinstance(spacing, list):
-            if self.debug:
-                print(f"[WARNING] Non-uniform spacing not fully supported yet, using first value")
-            spacing = spacing[0]
-        
+
         # Extract boundary from kwargs to avoid duplicate
         boundary = kwargs.pop('boundary', 'pbc' if config.cyclic else 'obc')
+
+        # Determine output specification method
+        smpo_kwargs = {}
+        
+        if config.output_inds is not None:
+            # Use explicit output positions (takes precedence)
+            smpo_kwargs['output_inds'] = config.output_inds
+            if self.debug:
+                print(f"[COMPRESSION] Using explicit output_inds: {config.output_inds}")
+        else:
+            # Calculate or use provided spacing
+            if config.spacing is None:
+                from ..builders.dimension_calculator import DimensionCalculator
+                calc = DimensionCalculator(debug=False)
+                spacing_result = calc.calculate_optimal_spacing(
+                    config.input_dim, config.output_dim, config.cyclic
+                )
+                spacing = spacing_result.spacing
+                
+                if self.debug:
+                    print(f"[COMPRESSION] Auto-calculated spacing: {spacing}")
+            else:
+                spacing = config.spacing
+            
+            # Handle non-uniform spacing
+            if isinstance(spacing, list):
+                if self.debug:
+                    print(f"[WARNING] Non-uniform spacing not fully supported yet, using first value")
+                spacing = spacing[0]
+            
+            smpo_kwargs['spacing'] = spacing
         
         # Create SMPO
         smpo = SMPO_initialize(
@@ -119,7 +131,7 @@ class UnifiedCascadableOperator(CascadableOperator):
             cyclic=config.cyclic,
             add_identity=config.add_identity,
             boundary=boundary,
-            spacing=spacing,
+            **smpo_kwargs,
             **kwargs  # Pass remaining kwargs
         )
         

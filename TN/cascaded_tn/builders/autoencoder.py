@@ -38,6 +38,7 @@ class AutoencoderBuilder:
                           key=None,
                           validate_dims: bool = True,
                           enable_relu: Optional[Union[bool, List[int]]] = None,
+                          output_positions: Optional[Union[str, List[List[int]]]] = None,
                           **operator_kwargs) -> TensorNetworkCascade:
         """
         Create a complete autoencoder cascade.
@@ -50,6 +51,11 @@ class AutoencoderBuilder:
             initializer: JAX initializer for tensors
             key: JAX random key
             validate_dims: Whether to validate/suggest dimensions for cyclic
+            enable_relu: Enable ReLU between layers (bool or list of layer indices)
+            output_positions: Control output placement for each layer:
+                - None: Use automatic uniform spacing (default)
+                - 'center': Place outputs symmetrically centered in each layer
+                - List[List[int]]: Explicit output positions per layer
             **operator_kwargs: Additional kwargs for operators
             
         Returns:
@@ -92,6 +98,11 @@ class AutoencoderBuilder:
                     if 0 <= layer_idx < len(relu_configs):
                         relu_configs[layer_idx] = True
 
+        # Process output positions configuration
+        output_inds_per_layer = self._prepare_output_positions(
+            full_dims, output_positions, symmetric, len(layer_dims) - 1
+        )
+
         # Handle physical dimensions for symmetric case
         if 'phys_dims' in operator_kwargs and symmetric:
             phys_dims_list = operator_kwargs['phys_dims']
@@ -119,7 +130,8 @@ class AutoencoderBuilder:
 
         # Create operators
         operators = self._create_operators(
-            full_dims, bond_dims, relu_configs, cyclic, initializer, key, **operator_kwargs
+            full_dims, bond_dims, relu_configs, output_inds_per_layer,
+            cyclic, initializer, key, **operator_kwargs
         )
         
         # Create cascade
@@ -297,7 +309,93 @@ class AutoencoderBuilder:
         # Decoder: bottleneck → input (reversed, excluding bottleneck)
         decoder_dims = encoder_dims[-2::-1]
         return encoder_dims + decoder_dims
-    
+
+    def _prepare_output_positions(self,
+                                full_dims: List[int],
+                                output_positions: Optional[Union[str, List[List[int]]]],
+                                symmetric: bool,
+                                num_encoder_layers: int) -> List[Optional[List[int]]]:
+        """
+        Prepare output_inds for each layer based on output_positions configuration.
+        
+        Args:
+            full_dims: Full architecture dimensions
+            output_positions: User specification ('center', explicit list, or None)
+            symmetric: Whether this is a symmetric autoencoder
+            num_encoder_layers: Number of encoder layers (for symmetric handling)
+            
+        Returns:
+            List of output_inds for each layer (None means use spacing)
+        """
+        num_layers = len(full_dims) - 1
+        
+        if output_positions is None:
+            # Use default spacing-based approach
+            return [None] * num_layers
+        
+        if isinstance(output_positions, str):
+            if output_positions == 'center':
+                # Calculate centered positions for each layer
+                output_inds_list = []
+                for i in range(num_layers):
+                    input_dim = full_dims[i]
+                    output_dim = full_dims[i + 1]
+                    centered = self.dim_calc.calculate_centered_positions(input_dim, output_dim)
+                    output_inds_list.append(centered)
+                    
+                    if self.debug:
+                        print(f"  Layer {i}: centered output_inds = {centered}")
+                
+                return output_inds_list
+            else:
+                raise ValueError(f"Unknown output_positions strategy: '{output_positions}'. "
+                            f"Use 'center' or provide explicit list.")
+        
+        elif isinstance(output_positions, list):
+            # Explicit positions provided
+            if symmetric:
+                # For symmetric: user provides encoder positions, we mirror for decoder
+                if len(output_positions) != num_encoder_layers:
+                    raise ValueError(
+                        f"For symmetric autoencoder with {num_encoder_layers} encoder layers, "
+                        f"output_positions must have {num_encoder_layers} elements, "
+                        f"got {len(output_positions)}"
+                    )
+                
+                # Mirror positions for decoder (reverse order, flip indices)
+                encoder_positions = output_positions
+                decoder_positions = []
+                
+                for i in range(num_encoder_layers - 1, -1, -1):
+                    # Decoder layer i maps to encoder layer (num_encoder_layers - 1 - i)
+                    encoder_layer_idx = num_encoder_layers - 1 - i
+                    encoder_input_dim = full_dims[encoder_layer_idx]
+                    encoder_output_dim = full_dims[encoder_layer_idx + 1]
+                    
+                    # Decoder has swapped input/output dims
+                    decoder_input_dim = encoder_output_dim
+                    decoder_output_dim = encoder_input_dim
+                    
+                    # Mirror the positions: if encoder had outputs at [0, 9, 18] for 19→3,
+                    # decoder needs outputs for 3→19, which is different structure
+                    # For expansion, we don't use output_inds (SMPO doesn't expand)
+                    # So we set None for decoder layers
+                    decoder_positions.append(None)
+                
+                return encoder_positions + decoder_positions
+            else:
+                # Non-symmetric: user provides all positions
+                if len(output_positions) != num_layers:
+                    raise ValueError(
+                        f"output_positions must have {num_layers} elements for {num_layers} layers, "
+                        f"got {len(output_positions)}"
+                    )
+                return output_positions
+        
+        else:
+            raise ValueError(f"output_positions must be None, 'center', or a list, "
+                        f"got {type(output_positions)}")
+
     def _prepare_bond_dimensions(self, 
                                full_dims: List[int],
                                bond_dims: Optional[Union[int, List[int]]],
@@ -329,6 +427,7 @@ class AutoencoderBuilder:
                          full_dims: List[int],
                          bond_dims: List[int],
                          relu_configs: List[bool],
+                         output_inds_per_layer: List[Optional[List[int]]],
                          cyclic: bool,
                          initializer,
                          key,
@@ -368,14 +467,15 @@ class AutoencoderBuilder:
                 cyclic=cyclic,
                 phys_dim=layer_phys_dims[i],
                 add_identity=add_identity,
-                enable_relu=relu_configs[i]
+                enable_relu=relu_configs[i],
+                output_inds=output_inds_per_layer[i]
             )
             
             op = UnifiedCascadableOperator(
                 config=config,
                 initializer=initializer,
                 key=keys[i],
-                debug=False,  # Less verbose
+                debug=False,
                 **operator_kwargs
             )
             
@@ -383,7 +483,9 @@ class AutoencoderBuilder:
             
             if self.debug:
                 op_type = "↓" if config.output_dim < config.input_dim else "↑"
-                print(f"  Layer {i}: {full_dims[i]}→{full_dims[i+1]} ({op_type}), χ={bond_dims[i]}, φ={layer_phys_dims[i]}")
+                pos_str = f", pos={config.output_inds}" if config.output_inds else ""
+                print(f"  Layer {i}: {full_dims[i]}→{full_dims[i+1]} ({op_type}), "
+                    f"χ={bond_dims[i]}, φ={layer_phys_dims[i]}{pos_str}")
         
         return operators
 
