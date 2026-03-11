@@ -16,7 +16,6 @@
 import os
 from xml.parsers.expat import errors
 
-from QiML.TN.cascaded_tn.builders import autoencoder
 os.environ["KMP_WARNINGS"] = "0"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE") 
@@ -114,7 +113,7 @@ def main():
     ## ------------------------------------------------------
     # Load 40 MHz dataset 
     # -------------------------------------------------------
-    inputPath = "/lus/eagle/projects/ATLAS_workflow_ALCF/sagar/QiML/" #Change this based on wherever your datasets are located.
+    inputPath = "/global/cfs/cdirs/m2616/sagar/QiML/" #Change this based on wherever your datasets are located.
     print(os.environ["HDF5_USE_FILE_LOCKING"]) #double check this should be false, otherwise there might be issues with reading the hdf5 files.
     skip_MET_eta=False #Set this to True if you want to skip the MET eta feature in the dataset.
     norm=True #Set this to True if you want to normalize the dataset features to zero mean and unit variance.
@@ -240,7 +239,7 @@ def main():
     os.makedirs(result_folder, exist_ok=True)
 
     for tensor in autoencoder.tensors:
-        print(qtn.tensor)
+        print(tensor)
 
     def loss_fn(data, targets, *params):
 
@@ -302,10 +301,7 @@ def main():
     # -------------------------------------------------------
     to_store['epochs'] = (epochs)
     history = { 'loss': [], 
-                'val_error' : [],
-                'spectral_term': [],
-                'smooth_term': [],
-                'sparse_term': [],
+                'val_loss' : [],
                 'epoch_time': [], 
                 'best_epoch': -1,
                 'unfinished': True}
@@ -377,7 +373,7 @@ def main():
     print(f"  Total epochs run: {len(history['loss'])}")
     print(f"  Best epoch: {history['best_epoch'] + 1}")
     print(f"  Best validation error: {early_stopper.best_loss:.3f}")
-    print(f"  Final validation error: {history['val_error'][-1]:.3f}")
+    print(f"  Final validation error: {history['val_loss'][-1]:.3f}")
     print("="*80)
 
     # Save final best model
@@ -396,7 +392,7 @@ def main():
     plt.figure(figsize=(8, 6))
     plt.yscale('log')
     plt.plot(range(len(history['loss'])), history['loss'], linestyle="-.", marker='o', label='Training Loss')
-    plt.plot(range(len(history['val_error'])), history['val_error'], linestyle="-.", marker='o', label='Validation Loss')
+    plt.plot(range(len(history['val_loss'])), history['val_loss'], linestyle="-.", marker='o', label='Validation Loss')
     # plt.plot(range(len(history['spectral_term'])), history['spectral_term'], linestyle="-.", marker='o', label='Spectral Term')
     # plt.plot(range(len(history['smooth_term'])), history['smooth_term'], linestyle="-.", marker='o', label='Smooth Term')
     # plt.plot(range(len(history['sparse_term'])), history['sparse_term'], linestyle="-.", marker='o', label='Sparse Term')
@@ -498,20 +494,20 @@ def main():
     htt = d.load_data(inputPath + "hToTauTau_13TeV_PU20.h5", batch_size=10000, skip_MET_eta=skip_MET_eta, shuffle=True, norm=norm, cartesian=cartesian, particle_ordering=ordering)
 
     # Run the evaluation on bkg and signals
-    bkg_train_norm = evaluate_model(autoencoder, background_train, norm_term, embedding, verbose=True)
-    bkg_val_norm = evaluate_model(autoencoder, background_val, norm_term, embedding, verbose=True)
-    bkg_test_norm = evaluate_model(autoencoder, background_test, norm_term, embedding, verbose=True)
-    a4l_norm = evaluate_model(autoencoder, a4l, norm_term, embedding, verbose=True)
-    lq_norm = evaluate_model(autoencoder, lq, norm_term, embedding, verbose=True)
-    htnu_norm = evaluate_model(autoencoder, htnu, norm_term, embedding, verbose=True)
-    htt_norm  = evaluate_model(autoencoder, htt, norm_term, embedding, verbose=True)
+    bkg_train_norm = evaluate_model(autoencoder, background_train, norm_term, verbose=True)
+    bkg_val_norm = evaluate_model(autoencoder, background_val, norm_term, verbose=True)
+    bkg_test_norm = evaluate_model(autoencoder, background_test, norm_term, verbose=True)
+    a4l_norm = evaluate_model(autoencoder, a4l, norm_term, verbose=True)
+    lq_norm = evaluate_model(autoencoder, lq, norm_term, verbose=True)
+    htnu_norm = evaluate_model(autoencoder, htnu, norm_term, verbose=True)
+    htt_norm  = evaluate_model(autoencoder, htt, norm_term, verbose=True)
 
     # Run the evaluation on bkg and signals
-    bkg_score = evaluate_model(autoencoder, background_test, score_term, embedding, verbose=True)
-    a4l_score = evaluate_model(autoencoder, a4l, score_term, embedding, verbose=True)
-    lq_score = evaluate_model(autoencoder, lq, score_term, embedding, verbose=True)
-    htnu_score = evaluate_model(autoencoder, htnu, score_term, embedding, verbose=True)
-    htt_score  = evaluate_model(autoencoder, htt, score_term, embedding, verbose=True)
+    bkg_score = evaluate_model(autoencoder, background_test, score_term, verbose=True)
+    a4l_score = evaluate_model(autoencoder, a4l, score_term, verbose=True)
+    lq_score = evaluate_model(autoencoder, lq, score_term, verbose=True)
+    htnu_score = evaluate_model(autoencoder, htnu, score_term, verbose=True)
+    htt_score  = evaluate_model(autoencoder, htt, score_term, verbose=True)
 
     ## ------------------------------------------------------
     # save to csv files
