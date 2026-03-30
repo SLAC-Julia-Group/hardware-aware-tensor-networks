@@ -1,4 +1,4 @@
 [submodule "tn4ml"]
 	path = tn4ml
-	url = ../tn4ml
+	url = git@github.com:SagarA17/tn4ml.git 
 	branch = qiml
