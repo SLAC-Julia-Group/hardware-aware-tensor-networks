@@ -13,6 +13,7 @@ QiML/
 ├── tn4ml/          # Core tensor network ML framework (submodule)
 ├── cascaded_tn/    # Cascaded SMPO encoder package
 └── Training/       # Training notebooks and utilities
+└── HLS/            # The C++ HLS code
 ```
 
 ### `tn4ml` - https://github.com/bsc-quantic/tn4ml
