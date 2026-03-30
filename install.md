@@ -42,7 +42,7 @@ Then check your installation
 conda list | grep cuda
 nvcc --version
 ```
-### 4) OPTIONAL: install torch
+### 4) Install torch
 
 It´s important to do this before installing jax..
 ```
@@ -71,10 +71,10 @@ print("JAX backend:", jax.devices())
 
 ### 6) install remaining libraries
 
-I recommend here that you move to https://github.com/bsc-quantic/tn4ml and continue the installation from there
 
 ```
-git clone https://github.com/bsc-quantic/tn4ml.git
+git submodule init
+git submodule update
 pip install -e tn4ml/
 pip install "tn4ml[examples]"
 ```
@@ -85,6 +85,3 @@ Other optional libraries are
 pip install jupyterlab notebook
 pip install wandb 
 ```
-
-
-

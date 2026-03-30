@@ -18,7 +18,7 @@ from pathlib import Path
 
 # Add parent directory to path for imports
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cascaded_tn.training.cascaded_model import CascadedModel, create_trainable_encoder
 
